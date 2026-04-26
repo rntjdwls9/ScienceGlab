@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% set is_edit = problem is not none %}
+{% block title %}{% if is_edit %}문제 수정{% else %}문제 등록{% endif %}{% endblock %}
+
+{% block content %}
+<section class="max-w-3xl mx-auto px-6 py-10">
+  <h1 class="text-2xl font-bold mb-1">
+    {% if is_edit %}문제 수정{% else %}문제 등록{% endif %}
+  </h1>
+  <p class="text-sm text-slate-500 mb-8">
+    {% if is_edit %}
+      이미지를 새로 올리지 않으면 기존 이미지가 유지됩니다.
+    {% else %}
+      문제 이미지와 메타데이터를 입력하세요. 해설 이미지는 선택입니다.
+    {% endif %}
+  </p>
+
+  <form method="post" enctype="multipart/form-data" class="space-y-6"
+        action="{% if is_edit %}{{ url_for('edit_problem', pid=problem['id']) }}{% else %}{{ url_for('upload') }}{% endif %}">
+
+    <!-- 이미지 -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium mb-2">
+          문제 이미지
+          {% if is_edit %}<span class="text-xs text-slate-400">(교체 시에만 선택)</span>
+          {% else %}<span class="text-red-500">*</span>{% endif %}
+        </label>
+        <label class="flex flex-col items-center justify-center w-full h-44
+                      border-2 border-dashed border-slate-300 rounded-lg cursor-pointer
+                      hover:border-brand-500 hover:bg-brand-50/40 transition relative">
+          <input type="file" name="problem_image" accept="image/*"
+                 {% if not is_edit %}required{% endif %}
+                 class="hidden" id="problem_image"
+                 onchange="previewImg(this,'preview-problem')" />
+          {% if is_edit %}
+            <img id="preview-problem"
+                 src="{{ url_for('uploaded_file', filename=problem['problem_image']) }}"
+                 class="max-h-40 object-contain" />
+            <span class="absolute bottom-1 right-2 text-[10px] text-slate-400 bg-white/80 px-1 rounded">
+              현재 이미지
+            </span>
+          {% else %}
+            <img id="preview-problem" class="hidden max-h-40 object-contain" />
+            <div id="placeholder-problem" class="text-slate-400 text-sm text-center px-4">
+              클릭해서 이미지 선택<br/>
+              <span class="text-xs">(png, jpg, jpeg, gif, webp)</span>
+            </div>
+          {% endif %}
+        </label>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium mb-2">
+          해설 이미지 <span class="text-xs text-slate-400">(선택)</span>
+        </label>
+        <label class="flex flex-col items-center justify-center w-full h-44
+                      border-2 border-dashed border-slate-300 rounded-lg cursor-pointer
+                      hover:border-brand-500 hover:bg-brand-50/40 transition relative">
+          <input type="file" name="solution_image" accept="image/*"
+                 class="hidden" id="solution_image"
+                 onchange="previewImg(this,'preview-solution')" />
+          {% if is_edit and problem['solution_image'] %}
+            <img id="preview-solution"
+                 src="{{ url_for('uploaded_file', filename=problem['solution_image']) }}"
+                 class="max-h-40 object-contain" />
+            <span class="absolute bottom-1 right-2 text-[10px] text-slate-400 bg-white/80 px-1 rounded">
+              현재 이미지
+            </span>
+          {% else %}
+            <img id="preview-solution" class="hidden max-h-40 object-contain" />
+            <div id="placeholder-solution" class="text-slate-400 text-sm text-center px-4">
+              클릭해서 이미지 선택<br/>
+              <span class="text-xs">{% if is_edit %}(교체 시에만 선택){% else %}(선택사항){% endif %}</span>
+            </div>
+          {% endif %}
+        </label>
+        {% if is_edit and problem['solution_image'] %}
+          <label class="mt-2 inline-flex items-center gap-1 text-xs text-slate-600">
+            <input type="checkbox" name="remove_solution" value="1" class="accent-red-600" />
+            해설 이미지 삭제
+          </label>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- 메타데이터 -->
+    <div>
+      <label class="block text-sm font-medium mb-2">제목 <span class="text-red-500">*</span></label>
+      <input type="text" name="title" required maxlength="200"
+             value="{{ problem['title'] if is_edit else '' }}"
+             placeholder="예: 2024 수능 30번"
+             class="w-full px-3 py-2 border border-slate-300 rounded-md
+                    focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <label class="text-sm font-medium">단원 <span class="text-red-500">*</span></label>
+          <a href="{{ url_for('units_page') }}" class="text-xs text-brand-600 hover:underline">+ 단원 관리</a>
+        </div>
+        <select name="unit" required
+                class="w-full px-3 py-2 border border-slate-300 rounded-md bg-white
+                       focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+          <option value="">선택</option>
+          {% for u in unit_options %}
+            <option value="{{ u.path }}" {% if is_edit and problem['unit'] == u.path %}selected{% endif %}>{{ u.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium mb-2">난이도 <span class="text-red-500">*</span></label>
+        <select name="difficulty" required
+                class="w-full px-3 py-2 border border-slate-300 rounded-md bg-white
+                       focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+          <option value="">선택</option>
+          {% for d in difficulties %}
+            <option value="{{ d }}" {% if is_edit and problem['difficulty'] == d %}selected{% endif %}>
+              {{ d }}{% if d == '1' %} (가장 쉬움){% elif d == '5' %} (가장 어려움){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium mb-2">출처</label>
+        <input type="text" name="source" maxlength="100"
+               value="{{ problem['source'] if is_edit else '' }}"
+               placeholder='예: "2024 수능", "2024 9모"'
+               class="w-full px-3 py-2 border border-slate-300 rounded-md
+                      focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium mb-2">태그</label>
+      <input type="text" name="tags" maxlength="200"
+             value="{{ problem['tags'] if is_edit else '' }}"
+             placeholder="쉼표로 구분 (예: 등차수열, 시그마, 킬러)"
+             class="w-full px-3 py-2 border border-slate-300 rounded-md
+                    focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium mb-2">정답</label>
+      <input type="text" name="answer" maxlength="200"
+             value="{{ problem['answer'] if is_edit else '' }}"
+             placeholder="예: 24, ③, x=2"
+             class="w-full px-3 py-2 border border-slate-300 rounded-md
+                    focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
+    </div>
+
+    <div class="flex items-center gap-2 pt-2">
+      <button type="submit"
+              class="px-5 py-2.5 bg-brand-600 text-white rounded-md font-medium hover:bg-brand-700">
+        {% if is_edit %}수정 저장{% else %}문제 등록{% endif %}
+      </button>
+      {% if is_edit %}
+        <a href="{{ url_for('search') }}"
+           class="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-md font-medium hover:bg-slate-200">
+          취소
+        </a>
+      {% else %}
+        <button type="reset"
+                class="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-md font-medium hover:bg-slate-200">
+          초기화
+        </button>
+      {% endif %}
+
+      {% if is_edit %}
+        <div class="ml-auto">
+          <form method="post" action="{{ url_for('delete_problem', pid=problem['id']) }}"
+                onsubmit="return confirm('이 문제를 삭제하시겠습니까? (이미지도 함께 삭제됩니다)');">
+            <button type="submit"
+                    class="px-4 py-2.5 bg-white border border-red-300 text-red-600 rounded-md
+                           font-medium hover:bg-red-50">
+              문제 삭제
+            </button>
+          </form>
+        </div>
+      {% endif %}
+    </div>
+  </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function previewImg(input, targetId) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const img = document.getElementById(targetId);
+    const ph  = document.getElementById('placeholder-' + targetId.split('-')[1]);
+    const reader = new FileReader();
+    reader.onload = e => {
+      img.src = e.target.result;
+      img.classList.remove('hidden');
+      if (ph) ph.classList.add('hidden');
+    };
+    reader.readAsDataURL(file);
+  }
+</script>
+{% endblock %}

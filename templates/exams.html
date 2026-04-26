@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}보관함{% endblock %}
+
+{% block content %}
+<section class="max-w-4xl mx-auto px-6 py-10">
+  <div class="flex items-end justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold mb-1">보관함</h1>
+      <p class="text-sm text-slate-500">
+        저장된 시험지 목록입니다. 다시 열어 인쇄하거나 옵션을 그대로 복원할 수 있습니다.
+      </p>
+    </div>
+    <div class="text-sm text-slate-500">
+      총 <span class="font-semibold text-slate-800">{{ items|length }}</span>개
+    </div>
+  </div>
+
+  {% if items %}
+    <ul class="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden">
+      {% for it in items %}
+        <li class="flex items-center justify-between px-4 py-3 hover:bg-slate-50">
+          <div class="flex-1 min-w-0">
+            <a href="{{ url_for('exams_open', eid=it['id']) }}"
+               class="font-medium text-slate-800 hover:text-brand-700 truncate block">
+              {{ it['title'] }}
+            </a>
+            <div class="mt-0.5 text-xs text-slate-400">
+              {{ it['count'] }}문항 · 저장일 {{ it['created_at'][:10] }}
+            </div>
+          </div>
+          <div class="flex items-center gap-2 ml-3">
+            <a href="{{ url_for('exams_open', eid=it['id']) }}"
+               class="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-md hover:bg-brand-700">
+              열기
+            </a>
+            <form method="post" action="{{ url_for('exams_delete', eid=it['id']) }}"
+                  onsubmit="return confirm('시험지 \'{{ it['title'] }}\'을(를) 보관함에서 삭제하시겠습니까?');">
+              <button type="submit"
+                      class="px-3 py-1.5 text-xs bg-white border border-red-200 text-red-600 rounded-md hover:bg-red-50">
+                삭제
+              </button>
+            </form>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="text-center py-20 text-slate-400 border border-dashed border-slate-200 rounded-lg">
+      저장된 시험지가 없습니다.
+      <div class="mt-2"><a href="{{ url_for('search') }}" class="text-brand-600 hover:underline">→ 문제 검색에서 시험지 만들기</a></div>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

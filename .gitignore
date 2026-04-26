@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# Virtualenv
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / 도구
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 사용자 데이터 — 커밋하지 않음 (Render Persistent Disk에 따로 보관)
+problems.db
+problems.db-journal
+problems.db-shm
+problems.db-wal
+static/uploads/*
+!static/uploads/.gitkeep
+
+# 로컬 환경 변수
+.env
+*.local

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}사용자 관리{% endblock %}
+
+{% block content %}
+<section class="max-w-3xl mx-auto px-6 py-10">
+  <h1 class="text-2xl font-bold mb-1">사용자 관리</h1>
+  <p class="text-sm text-slate-500 mb-8">
+    개별 아이디와 비밀번호를 부여하면 각자 자기 보관함과 학원 정보를 관리할 수 있습니다.
+    관리자는 문제·단원·사용자까지 모두 관리할 수 있습니다.
+  </p>
+
+  <!-- 새 사용자 추가 -->
+  <form method="post" action="{{ url_for('users_add') }}"
+        class="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-8 space-y-3">
+    <h2 class="text-sm font-semibold text-slate-700">+ 새 사용자 추가</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs text-slate-500 mb-1">아이디</label>
+        <input type="text" name="username" required maxlength="30"
+               placeholder="예: kim_teacher"
+               class="w-full px-3 py-2 border border-slate-300 rounded-md text-sm
+                      focus:outline-none focus:ring-2 focus:ring-brand-500" />
+      </div>
+      <div>
+        <label class="block text-xs text-slate-500 mb-1">비밀번호 (4자 이상)</label>
+        <input type="text" name="password" required minlength="4"
+               placeholder="초기 비밀번호"
+               class="w-full px-3 py-2 border border-slate-300 rounded-md text-sm
+                      focus:outline-none focus:ring-2 focus:ring-brand-500" />
+      </div>
+    </div>
+    <label class="inline-flex items-center gap-1.5 text-sm cursor-pointer">
+      <input type="checkbox" name="is_admin" value="1" class="accent-brand-600 w-4 h-4" />
+      <span class="text-slate-700">관리자 권한 부여</span>
+    </label>
+    <div>
+      <button type="submit"
+              class="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md
+                     hover:bg-brand-700">
+        추가
+      </button>
+    </div>
+  </form>
+
+  <!-- 사용자 목록 -->
+  <ul class="border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-200">
+    {% for u in users %}
+      <li class="px-4 py-3 hover:bg-slate-50">
+        <div class="flex items-center gap-3">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-medium">{{ u['username'] }}</span>
+              {% if u['is_admin'] %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-brand-100 text-brand-700 font-semibold">
+                  관리자
+                </span>
+              {% endif %}
+              {% if u['id'] == current_user.id %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                  나
+                </span>
+              {% endif %}
+            </div>
+            <div class="text-xs text-slate-400 mt-0.5">
+              가입일 {{ u['created_at'][:10] }}
+            </div>
+          </div>
+
+          <!-- 비밀번호 변경 -->
+          <form method="post" action="{{ url_for('users_change_password', uid=u['id']) }}"
+                class="flex items-center gap-1">
+            <input type="text" name="password" required minlength="4"
+                   placeholder="새 비밀번호"
+                   class="w-32 px-2 py-1 border border-slate-300 rounded-md text-sm" />
+            <button type="submit"
+                    class="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-100">
+              변경
+            </button>
+          </form>
+
+          <!-- 삭제 -->
+          <form method="post" action="{{ url_for('users_delete', uid=u['id']) }}"
+                onsubmit="return confirm('사용자 \'{{ u['username'] }}\'와 그 보관함·설정을 모두 삭제합니다. 진행하시겠습니까?');">
+            <button type="submit" {% if u['id'] == current_user.id %}disabled{% endif %}
+                    class="text-xs px-2 py-1 rounded
+                           {% if u['id'] == current_user.id %}
+                             bg-slate-100 text-slate-400 cursor-not-allowed
+                           {% else %}
+                             bg-white border border-red-200 text-red-600 hover:bg-red-50
+                           {% endif %}">
+              삭제
+            </button>
+          </form>
+        </div>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

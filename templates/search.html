@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}문제 검색{% endblock %}
+
+{% set diff_color = {
+  '1': 'bg-emerald-100 text-emerald-700',
+  '2': 'bg-lime-100 text-lime-700',
+  '3': 'bg-amber-100 text-amber-700',
+  '4': 'bg-orange-100 text-orange-700',
+  '5': 'bg-red-100 text-red-700',
+} %}
+
+{% block content %}
+<section class="max-w-6xl mx-auto px-6 py-10 pb-28">
+  <div class="flex items-end justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold mb-1">문제 검색</h1>
+      <p class="text-sm text-slate-500">
+        조건에 맞는 문제를 골라 시험지를 만들 수 있습니다.
+      </p>
+    </div>
+    <div class="text-sm text-slate-500">
+      총 <span class="font-semibold text-slate-800">{{ problems|length }}</span>개
+    </div>
+  </div>
+
+  <!-- 필터 -->
+  <form method="get" class="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-8">
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">단원</label>
+        <select name="unit"
+                class="w-full px-3 py-2 border border-slate-300 rounded-md bg-white text-sm">
+          <option value="">전체</option>
+          {% for u in unit_options %}
+            <option value="{{ u.path }}" {% if filters.unit == u.path %}selected{% endif %}>{{ u.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">난이도</label>
+        <select name="difficulty"
+                class="w-full px-3 py-2 border border-slate-300 rounded-md bg-white text-sm">
+          <option value="">전체</option>
+          {% for d in difficulties %}
+            <option value="{{ d }}" {% if filters.difficulty == d %}selected{% endif %}>난이도 {{ d }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">출처</label>
+        <input list="sources" name="source" value="{{ filters.source }}"
+               placeholder="예: 2024 수능"
+               class="w-full px-3 py-2 border border-slate-300 rounded-md text-sm" />
+        <datalist id="sources">
+          {% for s in sources %}<option value="{{ s }}">{% endfor %}
+        </datalist>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">태그</label>
+        <input type="text" name="tag" value="{{ filters.tag }}"
+               placeholder="예: 등차수열"
+               class="w-full px-3 py-2 border border-slate-300 rounded-md text-sm" />
+      </div>
+    </div>
+    <div class="flex gap-2 mt-3">
+      <button type="submit"
+              class="px-4 py-2 bg-brand-600 text-white text-sm rounded-md font-medium hover:bg-brand-700">
+        필터 적용
+      </button>
+      <a href="{{ url_for('search') }}"
+         class="px-4 py-2 bg-white border border-slate-300 text-sm rounded-md hover:bg-slate-100">
+        초기화
+      </a>
+    </div>
+  </form>
+
+  <!-- 결과 -->
+  <form id="exam-form" method="get" action="{{ url_for('exam') }}">
+    {% if problems %}
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {% for p in problems %}
+          <div class="group relative border border-slate-200 rounded-lg overflow-hidden
+                      hover:border-brand-500 hover:shadow-md transition
+                      has-[:checked]:border-brand-600 has-[:checked]:ring-2
+                      has-[:checked]:ring-brand-500/40">
+            <label class="block cursor-pointer">
+              <div class="relative aspect-video bg-slate-50 flex items-center justify-center">
+                <img src="{{ url_for('uploaded_file', filename=p['problem_image']) }}"
+                     alt="{{ p['title'] }}"
+                     class="max-h-full max-w-full object-contain" />
+                <input type="checkbox" name="ids" value="{{ p['id'] }}"
+                       class="absolute top-2 left-2 w-5 h-5 accent-brand-600 cursor-pointer js-pick" />
+              </div>
+              <div class="p-3">
+                <div class="flex items-start justify-between gap-2">
+                  <h3 class="font-semibold text-sm line-clamp-2">{{ p['title'] }}</h3>
+                  <span class="shrink-0 text-[11px] px-1.5 py-0.5 rounded
+                               {{ diff_color.get(p['difficulty']|string, 'bg-slate-100 text-slate-600') }}">
+                    Lv.{{ p['difficulty'] }}
+                  </span>
+                </div>
+                <div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-1">
+                  <span class="px-1.5 py-0.5 bg-slate-100 rounded">{{ p['unit'] }}</span>
+                  {% if p['source'] %}
+                    <span class="px-1.5 py-0.5 bg-slate-100 rounded">{{ p['source'] }}</span>
+                  {% endif %}
+                </div>
+                {% if p['tags'] %}
+                  <div class="mt-1 text-xs text-slate-400 truncate">#{{ p['tags'].replace(',', ' #') }}</div>
+                {% endif %}
+              </div>
+            </label>
+            <a href="{{ url_for('edit_problem', pid=p['id']) }}"
+               class="absolute top-2 right-2 px-2 py-1 text-[11px] rounded
+                      bg-white/90 border border-slate-200 text-slate-600
+                      opacity-0 group-hover:opacity-100 hover:bg-white hover:text-brand-700 transition">
+              수정
+            </a>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="text-center py-20 text-slate-400 border border-dashed border-slate-200 rounded-lg">
+        조건에 해당하는 문제가 없습니다.
+        <div class="mt-2"><a href="{{ url_for('upload') }}" class="text-brand-600 hover:underline">→ 새 문제 등록</a></div>
+      </div>
+    {% endif %}
+
+    <!-- Sticky 액션 바 -->
+    <div class="fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 shadow-lg">
+      <div class="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
+        <div class="text-sm">
+          <span class="font-semibold text-brand-700"><span id="pick-count">0</span></span>
+          <span class="text-slate-600">개 선택됨</span>
+        </div>
+        <div class="flex gap-2">
+          <button type="button" id="clear-pick"
+                  class="px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-md hover:bg-slate-200">
+            선택 해제
+          </button>
+          <button type="submit" id="make-exam" disabled
+                  class="px-5 py-2 bg-brand-600 text-white text-sm font-medium rounded-md
+                         hover:bg-brand-700 disabled:bg-slate-300 disabled:cursor-not-allowed">
+            시험지 만들기
+          </button>
+        </div>
+      </div>
+    </div>
+  </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const picks = document.querySelectorAll('.js-pick');
+  const countEl = document.getElementById('pick-count');
+  const btn = document.getElementById('make-exam');
+
+  function refresh() {
+    const n = document.querySelectorAll('.js-pick:checked').length;
+    countEl.textContent = n;
+    btn.disabled = n === 0;
+  }
+  picks.forEach(p => p.addEventListener('change', refresh));
+  document.getElementById('clear-pick').addEventListener('click', () => {
+    picks.forEach(p => { p.checked = false; });
+    refresh();
+  });
+  refresh();
+</script>
+{% endblock %}

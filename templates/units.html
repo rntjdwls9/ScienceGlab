@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}단원 관리{% endblock %}
+
+{% macro render_node(node, depth) %}
+  {% set used = counts.get(node.path, 0) %}
+  {% set has_children = node.children|length > 0 %}
+  <li class="border-t border-slate-200 first:border-t-0">
+    <div class="flex items-center gap-2 px-3 py-2 hover:bg-slate-50"
+         style="padding-left: {{ 0.75 + depth * 1.5 }}rem">
+      {% if depth > 0 %}<span class="text-slate-300 select-none">└</span>{% endif %}
+      <span class="font-medium">{{ node.name }}</span>
+      <span class="text-xs text-slate-400 ml-2">
+        {% if used > 0 %}{{ used }}개 문제{% endif %}
+      </span>
+      <div class="ml-auto flex items-center gap-2">
+        <button type="button"
+                class="js-add-child text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-300"
+                data-parent-id="{{ node.id }}"
+                data-parent-name="{{ node.name }}">
+          + 하위
+        </button>
+        <form method="post" action="{{ url_for('units_delete', uid=node.id) }}"
+              onsubmit="return confirm('단원 \'{{ node.name }}\'을(를) 삭제하시겠습니까?');"
+              class="inline">
+          <button type="submit"
+                  {% if used > 0 or has_children %}disabled title="{% if has_children %}하위 단원이 있습니다{% else %}사용 중입니다{% endif %}"{% endif %}
+                  class="text-xs px-2 py-1 rounded
+                         {% if used > 0 or has_children %}
+                           bg-slate-100 text-slate-400 cursor-not-allowed
+                         {% else %}
+                           bg-white border border-red-200 text-red-600 hover:bg-red-50
+                         {% endif %}">
+            삭제
+          </button>
+        </form>
+      </div>
+    </div>
+    {% if has_children %}
+      {% for child in node.children %}
+        {{ render_node(child, depth + 1) }}
+      {% endfor %}
+    {% endif %}
+  </li>
+{% endmacro %}
+
+{% block content %}
+<section class="max-w-3xl mx-auto px-6 py-10">
+  <h1 class="text-2xl font-bold mb-1">단원 관리</h1>
+  <p class="text-sm text-slate-500 mb-8">
+    단원 안에 하위 단원(폴더)을 만들 수 있습니다. 사용 중이거나 하위 단원이 있는 단원은 삭제할 수 없습니다.
+  </p>
+
+  <!-- 최상위 단원 추가 -->
+  <form method="post" action="{{ url_for('units_add') }}"
+        class="flex gap-2 mb-8 bg-slate-50 border border-slate-200 rounded-lg p-3">
+    <input type="text" name="name" required maxlength="30"
+           placeholder="새 단원 이름 (예: 미적분)"
+           class="flex-1 px-3 py-2 border border-slate-300 rounded-md text-sm
+                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
+    <button type="submit"
+            class="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md
+                   hover:bg-brand-700">
+      + 최상위 추가
+    </button>
+  </form>
+
+  {% if tree %}
+    <ul class="border border-slate-200 rounded-lg overflow-hidden">
+      {% for root in tree %}
+        {{ render_node(root, 0) }}
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-lg">
+      등록된 단원이 없습니다. 위에서 단원을 추가해주세요.
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll('.js-add-child').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const parentId   = btn.dataset.parentId;
+      const parentName = btn.dataset.parentName;
+      const name = prompt(`'${parentName}' 안에 추가할 하위 단원 이름:`);
+      if (!name) return;
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const f = document.createElement('form');
+      f.method = 'post';
+      f.action = '{{ url_for("units_add") }}';
+      f.style.display = 'none';
+      const p = document.createElement('input'); p.name = 'parent_id'; p.value = parentId;
+      const n = document.createElement('input'); n.name = 'name';      n.value = trimmed;
+      f.appendChild(p); f.appendChild(n);
+      document.body.appendChild(f);
+      f.submit();
+    });
+  });
+</script>
+{% endblock %}
