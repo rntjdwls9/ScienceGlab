@@ -13,10 +13,12 @@ from flask import (
 from werkzeug.security import generate_password_hash, check_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
+# 환경변수가 없으면 프로젝트 내부 경로로 fallback (Render 무료 티어에서도 작동).
+# 영구 저장이 필요하면 Persistent Disk를 mount하고 환경변수로 경로를 덮어쓰기.
 UPLOAD_DIR = Path(os.environ.get(
-    "MATHGLAB_UPLOAD_DIR", BASE_DIR / "static" / "uploads"))
+    "UPLOAD_DIR", BASE_DIR / "static" / "uploads"))
 DB_PATH = Path(os.environ.get(
-    "MATHGLAB_DB_PATH", BASE_DIR / "problems.db"))
+    "DB_PATH", BASE_DIR / "problems.db"))
 
 DEFAULT_UNITS = [
     "수열", "극한", "미분", "적분",
