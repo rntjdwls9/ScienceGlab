@@ -1,6 +1,6 @@
-# MathGlab
+# ScienceGlab
 
-수학 문제 관리 웹앱. 문제 등록·검색·시험지 생성·인쇄까지.
+과학 문제 관리 웹앱. 문제 등록·검색·시험지 생성·인쇄까지.
 
 Flask + SQLite + Tailwind CDN. 학원/단체용 다중 사용자 지원 (관리자/사용자 권한 분리).
 
@@ -25,7 +25,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-브라우저에서 http://127.0.0.1:5000 접속.
+브라우저에서 http://127.0.0.1:5001 접속.
 
 기본 관리자 계정: `admin` / `admin` (첫 실행 시 자동 생성, 로그인 후 비밀번호 변경 권장).
 
@@ -33,11 +33,11 @@ python app.py
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `SECRET_KEY` | `mathglab-dev-secret-CHANGE-ME` | Flask 세션 서명 키 (프로덕션 필수) |
+| `SECRET_KEY` | `scienceglab-dev-secret-CHANGE-ME` | Flask 세션 서명 키 (프로덕션 필수) |
 | `UPLOAD_DIR` | `static/uploads` | 업로드 이미지 저장 경로 |
 | `DB_PATH` | `problems.db` | SQLite DB 파일 경로 |
 | `FLASK_ENV` | `development` | `production` 시 debug 모드 끔 |
-| `PORT` | `5000` | 서버 포트 (Render에서 자동 주입) |
+| `PORT` | `5001` | 서버 포트 (Render에서 자동 주입) |
 
 ## 배포 (Render)
 

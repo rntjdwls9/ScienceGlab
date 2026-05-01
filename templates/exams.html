@@ -3,20 +3,100 @@
 
 {% block content %}
 <section class="max-w-4xl mx-auto px-6 py-10">
-  <div class="flex items-end justify-between mb-6">
+  <div class="flex items-end justify-between mb-4">
     <div>
       <h1 class="text-2xl font-bold mb-1">보관함</h1>
       <p class="text-sm text-slate-500">
-        저장된 시험지 목록입니다. 다시 열어 인쇄하거나 옵션을 그대로 복원할 수 있습니다.
+        폴더로 묶어 정리하고 제목으로 검색할 수 있습니다.
       </p>
     </div>
     <div class="text-sm text-slate-500">
-      총 <span class="font-semibold text-slate-800">{{ items|length }}</span>개
+      {{ items|length }}개{% if subfolders %} · 폴더 {{ subfolders|length }}개{% endif %}
     </div>
   </div>
 
+  <!-- 검색 -->
+  <form method="get" action="{{ url_for('exams_list') }}"
+        class="flex gap-2 mb-4">
+    <input type="text" name="q" value="{{ q }}"
+           placeholder="시험지 제목으로 검색 (전체 폴더 대상)"
+           class="flex-1 px-3 py-2 border border-slate-300 rounded-md text-sm
+                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
+    <button type="submit"
+            class="px-4 py-2 bg-brand-600 text-white text-sm rounded-md hover:bg-brand-700">
+      검색
+    </button>
+    {% if q %}
+      <a href="{{ url_for('exams_list', folder_id=current_folder_id) }}"
+         class="px-4 py-2 bg-white border border-slate-300 text-sm rounded-md hover:bg-slate-100">
+        검색 해제
+      </a>
+    {% endif %}
+  </form>
+
+  {% if not q %}
+    <!-- breadcrumb -->
+    <div class="flex items-center flex-wrap gap-1 text-sm mb-3">
+      {% for crumb in breadcrumb %}
+        {% if not loop.last %}
+          <a href="{{ url_for('exams_list', folder_id=crumb.id) if crumb.id else url_for('exams_list') }}"
+             class="text-brand-700 hover:underline">{{ crumb.name }}</a>
+          <span class="text-slate-300">/</span>
+        {% else %}
+          <span class="font-semibold text-slate-800">{{ crumb.name }}</span>
+        {% endif %}
+      {% endfor %}
+    </div>
+
+    <!-- 새 폴더 -->
+    <form method="post" action="{{ url_for('exam_folders_create') }}"
+          class="flex gap-2 mb-6 bg-slate-50 border border-slate-200 rounded-lg p-3">
+      {% if current_folder_id %}
+        <input type="hidden" name="parent_id" value="{{ current_folder_id }}" />
+      {% endif %}
+      <input type="text" name="name" required maxlength="60"
+             placeholder="새 폴더 이름{% if current_folder_id %} (현재 폴더 안){% endif %}"
+             class="flex-1 px-3 py-2 border border-slate-300 rounded-md text-sm
+                    focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
+      <button type="submit"
+              class="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md hover:bg-brand-700">
+        + 폴더 추가
+      </button>
+    </form>
+  {% endif %}
+
+  {% if q %}
+    <div class="text-sm text-slate-500 mb-3">
+      "{{ q }}" 검색 결과: <span class="font-semibold text-slate-800">{{ items|length }}</span>개
+    </div>
+  {% endif %}
+
+  {% if not q and subfolders %}
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
+      {% for f in subfolders %}
+        <div class="border border-slate-200 rounded-lg bg-white hover:border-brand-400 hover:shadow-sm transition group">
+          <a href="{{ url_for('exams_list', folder_id=f.id) }}"
+             class="block px-3 py-3 truncate font-medium text-slate-800">
+            <span class="text-amber-500 mr-1">📁</span>{{ f.name }}
+          </a>
+          <div class="flex border-t border-slate-100 text-xs">
+            <button type="button"
+                    class="flex-1 px-2 py-1.5 text-slate-500 hover:bg-slate-50 js-rename-folder"
+                    data-fid="{{ f.id }}" data-fname="{{ f.name }}">이름변경</button>
+            <form method="post" action="{{ url_for('exam_folders_delete', fid=f.id) }}"
+                  onsubmit="return confirm('폴더 \'{{ f.name }}\' 을 삭제하시겠습니까?');"
+                  class="flex-1 border-l border-slate-100">
+              <button type="submit"
+                      class="w-full px-2 py-1.5 text-red-600 hover:bg-red-50">삭제</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
   {% if items %}
-    <ul class="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden">
+    <ul class="divide-y divide-slate-200 border border-slate-200 rounded-lg overflow-hidden bg-white">
       {% for it in items %}
         <li class="flex items-center justify-between px-4 py-3 hover:bg-slate-50">
           <div class="flex-1 min-w-0">
@@ -26,15 +106,29 @@
             </a>
             <div class="mt-0.5 text-xs text-slate-400">
               {{ it['count'] }}문항 · 저장일 {{ it['created_at'][:10] }}
+              {% if q and it.folder_label %}
+                · 위치: <a class="text-slate-500 hover:underline"
+                          href="{{ url_for('exams_list', folder_id=it.folder_id) if it.folder_id else url_for('exams_list') }}">{{ it.folder_label }}</a>
+              {% endif %}
             </div>
           </div>
           <div class="flex items-center gap-2 ml-3">
+            <form method="post" action="{{ url_for('exams_move', eid=it['id']) }}" class="inline">
+              <select name="folder_id" onchange="this.form.submit()"
+                      class="text-xs px-2 py-1 border border-slate-300 rounded bg-white">
+                <option value="">— 보관함 (이동) —</option>
+                {% for f in all_folders %}
+                  <option value="{{ f.id }}"
+                          {% if it.folder_id == f.id %}selected{% endif %}>{{ f.label }}</option>
+                {% endfor %}
+              </select>
+            </form>
             <a href="{{ url_for('exams_open', eid=it['id']) }}"
                class="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-md hover:bg-brand-700">
               열기
             </a>
             <form method="post" action="{{ url_for('exams_delete', eid=it['id']) }}"
-                  onsubmit="return confirm('시험지 \'{{ it['title'] }}\'을(를) 보관함에서 삭제하시겠습니까?');">
+                  onsubmit="return confirm('시험지 \'{{ it['title'] }}\' 을(를) 보관함에서 삭제하시겠습니까?');">
               <button type="submit"
                       class="px-3 py-1.5 text-xs bg-white border border-red-200 text-red-600 rounded-md hover:bg-red-50">
                 삭제
@@ -44,11 +138,36 @@
         </li>
       {% endfor %}
     </ul>
-  {% else %}
+  {% elif not subfolders %}
     <div class="text-center py-20 text-slate-400 border border-dashed border-slate-200 rounded-lg">
-      저장된 시험지가 없습니다.
-      <div class="mt-2"><a href="{{ url_for('search') }}" class="text-brand-600 hover:underline">→ 문제 검색에서 시험지 만들기</a></div>
+      {% if q %}
+        검색 결과가 없습니다.
+      {% else %}
+        이 폴더에는 시험지가 없습니다.
+        <div class="mt-2"><a href="{{ url_for('search') }}" class="text-brand-600 hover:underline">→ 문제 검색에서 시험지 만들기</a></div>
+      {% endif %}
     </div>
   {% endif %}
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll('.js-rename-folder').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const fid = btn.dataset.fid;
+      const cur = btn.dataset.fname;
+      const next = prompt('새 폴더 이름:', cur);
+      if (!next || next.trim() === cur) return;
+      const f = document.createElement('form');
+      f.method = 'post';
+      f.action = `/exam_folders/${fid}/rename`;
+      const n = document.createElement('input');
+      n.name = 'name'; n.value = next.trim();
+      f.appendChild(n);
+      document.body.appendChild(f);
+      f.submit();
+    });
+  });
+</script>
 {% endblock %}

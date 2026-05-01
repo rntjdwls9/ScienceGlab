@@ -1,11 +1,14 @@
 import json
 import os
+import re
+import shutil
 import sqlite3
 import uuid
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
 
+import fitz  # PyMuPDF
 from flask import (
     Flask, g, render_template, request, redirect, url_for, flash, abort,
     jsonify, session, send_from_directory
@@ -21,19 +24,30 @@ DB_PATH = Path(os.environ.get(
     "DB_PATH", BASE_DIR / "problems.db"))
 
 DEFAULT_UNITS = [
-    "수열", "극한", "미분", "적분",
-    "확률", "통계", "지수로그", "삼각함수",
+    "물리학", "화학", "생명과학", "지구과학",
+    "물리학II", "화학II", "생명과학II", "지구과학II",
 ]
 DIFFICULTIES = ["1", "2", "3", "4", "5"]
 ALLOWED_EXT = {"png", "jpg", "jpeg", "gif", "webp"}
+ALLOWED_ATTACH_EXT = ALLOWED_EXT | {
+    "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx",
+    "hwp", "hwpx", "txt", "csv", "rtf", "md",
+    "zip", "mp4", "mp3",
+}
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get(
-    "SECRET_KEY", "mathglab-dev-secret-CHANGE-ME")
+    "SECRET_KEY", "scienceglab-dev-secret-CHANGE-ME")
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+# 일괄등록용 임시 작업 폴더 (PDF 원본 + 페이지 미리보기 PNG 보관)
+BATCH_DIR = UPLOAD_DIR / "_batch"
+BATCH_DIR.mkdir(parents=True, exist_ok=True)
+PDF_PREVIEW_DPI = 150  # 화면 미리보기 해상도
+PDF_CROP_DPI = 200     # 최종 저장 영역 해상도
 
 
 @app.route("/uploads/<path:filename>")
@@ -196,11 +210,168 @@ def init_db():
         con.execute("ALTER TABLE exams ADD COLUMN user_id INTEGER")
         con.execute("UPDATE exams SET user_id = ? WHERE user_id IS NULL",
                     (admin_id,))
+    if "folder_id" not in exams_cols:
+        con.execute("ALTER TABLE exams ADD COLUMN folder_id INTEGER")
+    # 보관함 폴더 (per-user, 중첩 가능)
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS exam_folders (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            parent_id  INTEGER REFERENCES exam_folders(id),
+            name       TEXT NOT NULL,
+            position   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    con.execute("CREATE INDEX IF NOT EXISTS idx_exam_folders_user "
+                "ON exam_folders(user_id, COALESCE(parent_id, 0))")
+
+    # concepts table — 시험지에 넣을 개념정리 자료
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS concepts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            title       TEXT NOT NULL,
+            unit        TEXT NOT NULL,
+            source      TEXT,
+            tags        TEXT,
+            image       TEXT NOT NULL,
+            created_at  TEXT NOT NULL
+        )
+        """
+    )
+
+    # posts table — 공지사항(notice) / 문의(inquiry) / 자료실(material) 통합
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS posts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            board       TEXT NOT NULL CHECK(board IN ('notice','inquiry','material')),
+            user_id     INTEGER NOT NULL,
+            title       TEXT NOT NULL,
+            body        TEXT,
+            image       TEXT,
+            created_at  TEXT NOT NULL
+        )
+        """
+    )
+    # Migrate older posts table whose CHECK constraint lacks 'material'
+    posts_sql_row = con.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='posts'"
+    ).fetchone()
+    posts_sql = (posts_sql_row[0] if posts_sql_row else "") or ""
+    if posts_sql and "'material'" not in posts_sql:
+        con.execute("ALTER TABLE posts RENAME TO posts_old")
+        con.execute(
+            """
+            CREATE TABLE posts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                board       TEXT NOT NULL CHECK(board IN ('notice','inquiry','material')),
+                user_id     INTEGER NOT NULL,
+                title       TEXT NOT NULL,
+                body        TEXT,
+                image       TEXT,
+                created_at  TEXT NOT NULL
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO posts (id, board, user_id, title, body, image, created_at) "
+            "SELECT id, board, user_id, title, body, image, created_at FROM posts_old"
+        )
+        con.execute("DROP TABLE posts_old")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_posts_board_id ON posts(board, id)")
+
+    # post_attachments — 한 게시글에 여러 첨부파일
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS post_attachments (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id       INTEGER NOT NULL REFERENCES posts(id),
+            original_name TEXT NOT NULL,
+            stored_name   TEXT NOT NULL,
+            size          INTEGER NOT NULL DEFAULT 0,
+            mime          TEXT,
+            created_at    TEXT NOT NULL
+        )
+        """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_post_attachments_post "
+        "ON post_attachments(post_id)"
+    )
+
+    # units: 정렬용 position 컬럼 마이그레이션
+    units_info2 = con.execute("PRAGMA table_info(units)").fetchall()
+    if units_info2 and "position" not in {r[1] for r in units_info2}:
+        con.execute(
+            "ALTER TABLE units ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
+        )
+        # 기존 단원에 형제 그룹별로 이름순 position 부여
+        rows = con.execute(
+            "SELECT id, parent_id FROM units "
+            "ORDER BY COALESCE(parent_id, 0), name"
+        ).fetchall()
+        next_pos: dict = {}
+        for r in rows:
+            key = r[1] if r[1] is not None else 0
+            p = next_pos.get(key, 0)
+            con.execute("UPDATE units SET position=? WHERE id=?", (p, r[0]))
+            next_pos[key] = p + 1
 
     # Seed default units if empty
     if con.execute("SELECT COUNT(*) FROM units").fetchone()[0] == 0:
-        con.executemany("INSERT INTO units (parent_id, name) VALUES (NULL, ?)",
-                        [(u,) for u in DEFAULT_UNITS])
+        con.executemany(
+            "INSERT INTO units (parent_id, name, position) VALUES (NULL, ?, ?)",
+            [(u, i) for i, u in enumerate(DEFAULT_UNITS)],
+        )
+
+    # learning videos board: 폴더 트리 + 영상 링크
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS learning_folders (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent_id  INTEGER REFERENCES learning_folders(id),
+            name       TEXT NOT NULL,
+            position   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_learning_folders_parent "
+        "ON learning_folders(COALESCE(parent_id, 0), position)"
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS learning_videos (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_id   INTEGER NOT NULL REFERENCES learning_folders(id),
+            title       TEXT NOT NULL,
+            url         TEXT NOT NULL,
+            description TEXT,
+            position    INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL
+        )
+        """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_learning_videos_folder "
+        "ON learning_videos(folder_id, position)"
+    )
+    if con.execute(
+        "SELECT COUNT(*) FROM learning_folders WHERE parent_id IS NULL"
+    ).fetchone()[0] == 0:
+        _now = datetime.utcnow().isoformat(timespec="seconds")
+        con.executemany(
+            "INSERT INTO learning_folders "
+            "(parent_id, name, position, created_at) "
+            "VALUES (NULL, ?, ?, ?)",
+            [("초등", 0, _now), ("중등", 1, _now), ("고등", 2, _now)],
+        )
+
     # Migrate legacy difficulty values: 상→5, 중→3, 하→1
     con.execute("UPDATE problems SET difficulty='5' WHERE difficulty='상'")
     con.execute("UPDATE problems SET difficulty='3' WHERE difficulty='중'")
@@ -215,7 +386,7 @@ UNIT_PATH_SEP = " > "
 def build_unit_tree() -> list[dict]:
     """Return list of root nodes; each node = {id, parent_id, name, path, children: [...]}."""
     rows = get_db().execute(
-        "SELECT id, parent_id, name FROM units ORDER BY name"
+        "SELECT id, parent_id, name FROM units ORDER BY position, name"
     ).fetchall()
     nodes = {
         r["id"]: {
@@ -386,6 +557,77 @@ def delete_upload(name: str | None) -> None:
         pass
 
 
+def _attach_ext_ok(filename: str) -> bool:
+    return ("." in filename
+            and filename.rsplit(".", 1)[1].lower() in ALLOWED_ATTACH_EXT)
+
+
+def save_attachments(db, post_id: int, files) -> int:
+    """Save uploaded files as attachments for a post. Returns count saved."""
+    saved = 0
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    for f in files or []:
+        if not f or not f.filename:
+            continue
+        original = f.filename
+        if not _attach_ext_ok(original):
+            flash(f"허용되지 않는 파일 형식: {original}", "error")
+            continue
+        ext = original.rsplit(".", 1)[1].lower()
+        stored = f"{uuid.uuid4().hex}.{ext}"
+        dest = UPLOAD_DIR / stored
+        f.save(dest)
+        try:
+            size = dest.stat().st_size
+        except OSError:
+            size = 0
+        db.execute(
+            "INSERT INTO post_attachments "
+            "(post_id, original_name, stored_name, size, mime, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (post_id, original, stored, size, f.mimetype or None, now),
+        )
+        saved += 1
+    return saved
+
+
+def get_post_attachments(db, post_id: int) -> list:
+    return db.execute(
+        "SELECT id, original_name, stored_name, size, mime "
+        "FROM post_attachments WHERE post_id=? ORDER BY id",
+        (post_id,),
+    ).fetchall()
+
+
+def delete_post_attachments(db, post_id: int, only_ids: list | None = None) -> None:
+    """Delete attachment files + rows. If only_ids is given, restrict to those."""
+    if only_ids is not None:
+        if not only_ids:
+            return
+        placeholders = ",".join("?" * len(only_ids))
+        rows = db.execute(
+            f"SELECT id, stored_name FROM post_attachments "
+            f"WHERE post_id=? AND id IN ({placeholders})",
+            [post_id, *only_ids],
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT id, stored_name FROM post_attachments WHERE post_id=?",
+            (post_id,),
+        ).fetchall()
+    for r in rows:
+        delete_upload(r["stored_name"])
+    if only_ids is not None:
+        placeholders = ",".join("?" * len(only_ids))
+        db.execute(
+            f"DELETE FROM post_attachments "
+            f"WHERE post_id=? AND id IN ({placeholders})",
+            [post_id, *only_ids],
+        )
+    else:
+        db.execute("DELETE FROM post_attachments WHERE post_id=?", (post_id,))
+
+
 def get_problem(pid: int) -> sqlite3.Row:
     row = get_db().execute("SELECT * FROM problems WHERE id = ?", (pid,)).fetchone()
     if row is None:
@@ -432,6 +674,263 @@ def upload():
                            unit_options=get_unit_options(),
                            difficulties=DIFFICULTIES,
                            problem=None)
+
+
+# ----- problems: PDF 일괄 등록 -----
+def _is_session_id(s: str) -> bool:
+    return isinstance(s, str) and len(s) == 32 and all(
+        c in "0123456789abcdef" for c in s
+    )
+
+
+@app.get("/upload/batch")
+@admin_required
+def upload_batch():
+    return render_template(
+        "upload_batch.html",
+        unit_options=get_unit_options(),
+        difficulties=DIFFICULTIES,
+    )
+
+
+def _render_pdf_pages(pdf_path: Path, sess_dir: Path,
+                      session_id: str, kind: str) -> list[dict]:
+    """Render a PDF's pages to PNG previews and return page metadata.
+
+    kind ∈ {"main", "solution"} — used in filename prefix and returned dicts.
+    """
+    doc = fitz.open(pdf_path)
+    pages: list[dict] = []
+    zoom = PDF_PREVIEW_DPI / 72.0
+    matrix = fitz.Matrix(zoom, zoom)
+    try:
+        for i, page in enumerate(doc):
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            png_name = f"{kind}_page_{i}.png"
+            pix.save(sess_dir / png_name)
+            pages.append({
+                "index": i,
+                "kind": kind,  # 'main' | 'solution'
+                "url": url_for(
+                    "uploaded_file",
+                    filename=f"_batch/{session_id}/{png_name}",
+                ),
+                "width": pix.width,
+                "height": pix.height,
+            })
+    finally:
+        doc.close()
+    return pages
+
+
+@app.post("/upload/batch/pdf")
+@admin_required
+def upload_batch_pdf():
+    main_file = request.files.get("pdf")
+    sol_file  = request.files.get("solution_pdf")  # 선택
+    if not main_file or not main_file.filename:
+        return jsonify({"error": "문제 PDF를 선택하세요."}), 400
+    if not main_file.filename.lower().endswith(".pdf"):
+        return jsonify({"error": "PDF 파일만 업로드 가능합니다."}), 400
+    if sol_file and sol_file.filename and not sol_file.filename.lower().endswith(".pdf"):
+        return jsonify({"error": "해설 파일도 PDF여야 합니다."}), 400
+
+    session_id = uuid.uuid4().hex
+    sess_dir = BATCH_DIR / session_id
+    sess_dir.mkdir(parents=True, exist_ok=True)
+
+    main_path = sess_dir / "main.pdf"
+    main_file.save(main_path)
+
+    sol_path: Path | None = None
+    if sol_file and sol_file.filename:
+        sol_path = sess_dir / "solution.pdf"
+        sol_file.save(sol_path)
+
+    try:
+        main_pages = _render_pdf_pages(main_path, sess_dir, session_id, "main")
+        sol_pages: list[dict] = []
+        if sol_path is not None:
+            sol_pages = _render_pdf_pages(sol_path, sess_dir, session_id, "solution")
+    except Exception as e:
+        shutil.rmtree(sess_dir, ignore_errors=True)
+        return jsonify({"error": f"PDF를 처리할 수 없습니다: {e}"}), 400
+
+    return jsonify({
+        "session_id": session_id,
+        "pages": main_pages + sol_pages,
+        "filename": main_file.filename,
+        "solution_filename": sol_file.filename if (sol_file and sol_file.filename) else None,
+        "has_solution_pdf": sol_path is not None,
+    })
+
+
+def _crop_region(doc: "fitz.Document", page_idx: int,
+                 x: float, y: float, w: float, h: float) -> str:
+    """Render a normalized region from `doc[page_idx]` and save to UPLOAD_DIR.
+    Returns saved filename."""
+    if page_idx < 0 or page_idx >= doc.page_count:
+        raise ValueError(f"잘못된 페이지 번호: {page_idx}")
+    page = doc[page_idx]
+    r = page.rect
+    x = max(0.0, min(1.0, float(x)))
+    y = max(0.0, min(1.0, float(y)))
+    w = max(0.001, min(1.0 - x, float(w)))
+    h = max(0.001, min(1.0 - y, float(h)))
+    clip = fitz.Rect(
+        r.x0 + x * r.width,
+        r.y0 + y * r.height,
+        r.x0 + (x + w) * r.width,
+        r.y0 + (y + h) * r.height,
+    )
+    zoom = PDF_CROP_DPI / 72.0
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom),
+                          clip=clip, alpha=False)
+    name = f"{uuid.uuid4().hex}.png"
+    pix.save(UPLOAD_DIR / name)
+    return name
+
+
+@app.post("/upload/batch/commit")
+@admin_required
+def upload_batch_commit():
+    data = request.get_json(silent=True) or {}
+    session_id = data.get("session_id", "")
+    crops = data.get("crops") or []
+    entity = data.get("entity", "problem")  # 'problem' | 'concept'
+
+    if not _is_session_id(session_id):
+        return jsonify({"error": "잘못된 세션입니다."}), 400
+    if entity not in ("problem", "concept"):
+        return jsonify({"error": "잘못된 등록 종류입니다."}), 400
+
+    sess_dir = BATCH_DIR / session_id
+    main_path = sess_dir / "main.pdf"
+    sol_path  = sess_dir / "solution.pdf"
+    if not main_path.exists():
+        return jsonify({"error": "세션이 만료되었습니다. 다시 업로드하세요."}), 400
+    if not crops:
+        return jsonify({"error": "등록할 영역이 없습니다."}), 400
+
+    main_doc = fitz.open(main_path)
+    sol_doc  = fitz.open(sol_path) if sol_path.exists() else None
+    db = get_db()
+    saved_files: list[str] = []  # 실패 시 롤백
+
+    def doc_for(pdf_kind: str):
+        if pdf_kind == "solution":
+            if sol_doc is None:
+                raise ValueError("해설 PDF가 업로드되지 않았습니다.")
+            return sol_doc
+        return main_doc
+
+    units = list_unit_paths()
+
+    try:
+        if entity == "problem":
+            problems  = [c for c in crops if c.get("kind") == "problem"]
+            solutions = {c["temp_id"]: c for c in crops if c.get("kind") == "solution"}
+            if not problems:
+                return jsonify({"error": "문제 영역이 1개 이상 필요합니다."}), 400
+            for i, c in enumerate(problems):
+                if not str(c.get("title", "")).strip():
+                    return jsonify({"error": f"문제 #{i+1}: 제목을 입력하세요."}), 400
+                if c.get("unit") not in units:
+                    return jsonify({"error": f"문제 #{i+1}: 단원을 선택하세요."}), 400
+                if c.get("difficulty") not in DIFFICULTIES:
+                    return jsonify({"error": f"문제 #{i+1}: 난이도를 선택하세요."}), 400
+                sid = c.get("solution_temp_id")
+                if sid is not None and sid not in solutions:
+                    return jsonify({"error": f"문제 #{i+1}: 연결된 해설을 찾을 수 없습니다."}), 400
+
+            for c in problems:
+                p_doc = doc_for(c.get("pdf", "main"))
+                problem_name = _crop_region(
+                    p_doc, int(c["page"]),
+                    c["x"], c["y"], c["w"], c["h"],
+                )
+                saved_files.append(problem_name)
+
+                solution_name: str | None = None
+                sid = c.get("solution_temp_id")
+                if sid is not None:
+                    s = solutions[sid]
+                    s_doc = doc_for(s.get("pdf", "main"))
+                    solution_name = _crop_region(
+                        s_doc, int(s["page"]),
+                        s["x"], s["y"], s["w"], s["h"],
+                    )
+                    saved_files.append(solution_name)
+
+                db.execute(
+                    """
+                    INSERT INTO problems
+                        (title, unit, difficulty, source, tags, answer,
+                         problem_image, solution_image, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(c["title"]).strip(),
+                        c["unit"],
+                        c["difficulty"],
+                        str(c.get("source", "")).strip(),
+                        str(c.get("tags", "")).strip(),
+                        str(c.get("answer", "")).strip(),
+                        problem_name, solution_name,
+                        datetime.utcnow().isoformat(timespec="seconds"),
+                    ),
+                )
+            count = len(problems)
+            label = "문제"
+        else:  # concept
+            concepts = [c for c in crops if c.get("kind") == "concept"]
+            if not concepts:
+                return jsonify({"error": "개념 영역이 1개 이상 필요합니다."}), 400
+            for i, c in enumerate(concepts):
+                if not str(c.get("title", "")).strip():
+                    return jsonify({"error": f"개념 #{i+1}: 제목을 입력하세요."}), 400
+                if c.get("unit") not in units:
+                    return jsonify({"error": f"개념 #{i+1}: 단원을 선택하세요."}), 400
+            for c in concepts:
+                p_doc = doc_for(c.get("pdf", "main"))
+                image_name = _crop_region(
+                    p_doc, int(c["page"]),
+                    c["x"], c["y"], c["w"], c["h"],
+                )
+                saved_files.append(image_name)
+                db.execute(
+                    """
+                    INSERT INTO concepts
+                        (title, unit, source, tags, image, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(c["title"]).strip(),
+                        c["unit"],
+                        str(c.get("source", "")).strip(),
+                        str(c.get("tags", "")).strip(),
+                        image_name,
+                        datetime.utcnow().isoformat(timespec="seconds"),
+                    ),
+                )
+            count = len(concepts)
+            label = "개념"
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        for name in saved_files:
+            delete_upload(name)
+        main_doc.close()
+        if sol_doc: sol_doc.close()
+        return jsonify({"error": f"등록 중 오류: {e}"}), 500
+    else:
+        main_doc.close()
+        if sol_doc: sol_doc.close()
+        shutil.rmtree(sess_dir, ignore_errors=True)
+        flash(f"{count}개의 {label}이 등록되었습니다.", "success")
+        return jsonify({"ok": True, "count": count,
+                        "redirect": url_for("search")})
 
 
 # ----- problems: edit -----
@@ -499,6 +998,21 @@ def delete_problem(pid):
     db.commit()
     flash(f"'{problem['title']}' 문제가 삭제되었습니다.", "success")
     return redirect(url_for("search"))
+
+
+# ----- concepts: delete -----
+@app.post("/concept/<int:cid>/delete")
+@admin_required
+def delete_concept(cid):
+    db = get_db()
+    row = db.execute("SELECT * FROM concepts WHERE id=?", (cid,)).fetchone()
+    if row is None:
+        abort(404)
+    delete_upload(row["image"])
+    db.execute("DELETE FROM concepts WHERE id=?", (cid,))
+    db.commit()
+    flash(f"'{row['title']}' 개념이 삭제되었습니다.", "success")
+    return redirect(url_for("search", tab="concept"))
 
 
 def _parse_problem_form(units, *, edit: bool):
@@ -580,10 +1094,15 @@ def units_add():
         parent_name = parent_row["name"]
 
     db = get_db()
+    next_pos = db.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM units "
+        "WHERE COALESCE(parent_id, 0) = COALESCE(?, 0)",
+        (parent_id,),
+    ).fetchone()[0]
     try:
         db.execute(
-            "INSERT INTO units (parent_id, name) VALUES (?, ?)",
-            (parent_id, name),
+            "INSERT INTO units (parent_id, name, position) VALUES (?, ?, ?)",
+            (parent_id, name, next_pos),
         )
         db.commit()
         if parent_name:
@@ -593,6 +1112,89 @@ def units_add():
     except sqlite3.IntegrityError:
         loc = f"'{parent_name}' 안" if parent_name else "최상위"
         flash(f"{loc}에 단원 '{name}'은(는) 이미 존재합니다.", "error")
+    return redirect(url_for("units_page"))
+
+
+@app.post("/units/<int:uid>/reorder")
+@admin_required
+def units_reorder(uid):
+    """드래그앤드롭용. 같은 부모 안에서 anchor_uid 기준 before/after 로 이동."""
+    pos_kind = request.form.get("position", "before")
+    if pos_kind not in ("before", "after"):
+        return jsonify({"error": "잘못된 position"}), 400
+    try:
+        anchor_uid = int(request.form.get("anchor_uid", ""))
+    except ValueError:
+        return jsonify({"error": "잘못된 anchor_uid"}), 400
+
+    db = get_db()
+    moved = db.execute(
+        "SELECT id, parent_id FROM units WHERE id=?", (uid,)
+    ).fetchone()
+    target = db.execute(
+        "SELECT id, parent_id FROM units WHERE id=?", (anchor_uid,)
+    ).fetchone()
+    if moved is None or target is None:
+        return jsonify({"error": "단원을 찾을 수 없습니다."}), 404
+    if (moved["parent_id"] or 0) != (target["parent_id"] or 0):
+        return jsonify({"error": "다른 부모 단원으로는 이동할 수 없습니다."}), 400
+    if uid == anchor_uid:
+        return jsonify({"ok": True})
+
+    parent_id = moved["parent_id"]
+    rows = db.execute(
+        "SELECT id FROM units "
+        "WHERE COALESCE(parent_id, 0) = COALESCE(?, 0) "
+        "ORDER BY position, name",
+        (parent_id,),
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    ids.remove(uid)
+    target_idx = ids.index(anchor_uid)
+    if pos_kind == "after":
+        target_idx += 1
+    ids.insert(target_idx, uid)
+
+    for new_pos, _id in enumerate(ids):
+        db.execute("UPDATE units SET position=? WHERE id=?", (new_pos, _id))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/units/<int:uid>/move")
+@admin_required
+def units_move(uid):
+    direction = request.form.get("direction", "")
+    if direction not in ("up", "down"):
+        abort(400)
+    db = get_db()
+    row = db.execute(
+        "SELECT id, parent_id, position FROM units WHERE id=?", (uid,)
+    ).fetchone()
+    if row is None:
+        abort(404)
+
+    if direction == "up":
+        sib = db.execute(
+            "SELECT id, position FROM units "
+            "WHERE COALESCE(parent_id, 0) = COALESCE(?, 0) AND position < ? "
+            "ORDER BY position DESC LIMIT 1",
+            (row["parent_id"], row["position"]),
+        ).fetchone()
+    else:
+        sib = db.execute(
+            "SELECT id, position FROM units "
+            "WHERE COALESCE(parent_id, 0) = COALESCE(?, 0) AND position > ? "
+            "ORDER BY position ASC LIMIT 1",
+            (row["parent_id"], row["position"]),
+        ).fetchone()
+
+    if sib is not None:
+        db.execute("UPDATE units SET position=? WHERE id=?",
+                   (sib["position"], row["id"]))
+        db.execute("UPDATE units SET position=? WHERE id=?",
+                   (row["position"], sib["id"]))
+        db.commit()
     return redirect(url_for("units_page"))
 
 
@@ -614,16 +1216,20 @@ def units_delete(uid):
               f"먼저 하위 단원을 모두 삭제하세요.", "error")
         return redirect(url_for("units_page"))
 
-    # Block if used by problems (search by full path of this unit)
+    # Block if used by problems or concepts (search by full path of this unit)
     paths_for_uid = [n["path"] for n in flatten_unit_tree(build_unit_tree())
                      if n["id"] == uid]
     if paths_for_uid:
-        used = db.execute(
-            "SELECT COUNT(*) FROM problems WHERE unit=?", (paths_for_uid[0],)
+        path = paths_for_uid[0]
+        used_p = db.execute(
+            "SELECT COUNT(*) FROM problems WHERE unit=?", (path,)
         ).fetchone()[0]
-        if used > 0:
-            flash(f"단원 '{paths_for_uid[0]}'은(는) {used}개 문제에서 사용 중이라 "
-                  f"삭제할 수 없습니다.", "error")
+        used_c = db.execute(
+            "SELECT COUNT(*) FROM concepts WHERE unit=?", (path,)
+        ).fetchone()[0]
+        if used_p + used_c > 0:
+            flash(f"단원 '{path}'은(는) 문제 {used_p}개 · 개념 {used_c}개에서 "
+                  f"사용 중이라 삭제할 수 없습니다.", "error")
             return redirect(url_for("units_page"))
 
     db.execute("DELETE FROM units WHERE id=?", (uid,))
@@ -668,41 +1274,80 @@ def settings_page():
 
 
 # ----- search -----
+def _distinct_tags(db, table: str) -> list[str]:
+    rows = db.execute(
+        f"SELECT DISTINCT tags FROM {table} "
+        f"WHERE tags IS NOT NULL AND tags <> ''"
+    ).fetchall()
+    bag: set = set()
+    for r in rows:
+        for t in (r["tags"] or "").split(","):
+            t = t.strip()
+            if t:
+                bag.add(t)
+    return sorted(bag)
+
+
 @app.route("/search")
 @login_required
 def search():
-    unit = request.args.get("unit", "").strip()
+    units = [u.strip() for u in request.args.getlist("unit") if u.strip()]
     difficulty = request.args.get("difficulty", "").strip()
     source = request.args.get("source", "").strip()
-    tag = request.args.get("tag", "").strip()
+    tag_raw = request.args.get("tag", "").strip()
+    tags = [t.strip() for t in tag_raw.split(",") if t.strip()]
 
-    sql = "SELECT * FROM problems WHERE 1=1"
+    tab = request.args.get("tab", "problem")
+    if tab not in ("problem", "concept"):
+        tab = "problem"
+
+    table = "concepts" if tab == "concept" else "problems"
+
+    conds = ["1=1"]
     params: list = []
-    if unit:
-        sql += " AND unit = ?"; params.append(unit)
-    if difficulty:
-        sql += " AND difficulty = ?"; params.append(difficulty)
+    if units:
+        parts = []
+        for up in units:
+            parts.append("(unit = ? OR unit LIKE ?)")
+            params.extend([up, f"{up}{UNIT_PATH_SEP}%"])
+        conds.append("(" + " OR ".join(parts) + ")")
+    if tab == "problem" and difficulty:
+        conds.append("difficulty = ?")
+        params.append(difficulty)
     if source:
-        sql += " AND source LIKE ?"; params.append(f"%{source}%")
-    if tag:
-        sql += " AND tags LIKE ?"; params.append(f"%{tag}%")
-    sql += " ORDER BY id DESC"
+        conds.append("source LIKE ?")
+        params.append(f"%{source}%")
+    for tg in tags:
+        conds.append("tags LIKE ?")
+        params.append(f"%{tg}%")
 
     db = get_db()
+    sql = f"SELECT * FROM {table} WHERE " + " AND ".join(conds) + " ORDER BY id DESC"
     rows = db.execute(sql, params).fetchall()
+
     sources = [
         r["source"] for r in db.execute(
-            "SELECT DISTINCT source FROM problems "
+            f"SELECT DISTINCT source FROM {table} "
             "WHERE source IS NOT NULL AND source <> '' ORDER BY source"
         ).fetchall()
     ]
+    tag_options = _distinct_tags(db, table)
+
     return render_template(
         "search.html",
         problems=rows,
+        tab=tab,
         unit_options=get_unit_options(),
         difficulties=DIFFICULTIES,
         sources=sources,
-        filters={"unit": unit, "difficulty": difficulty, "source": source, "tag": tag},
+        tag_options=tag_options,
+        filters={
+            "units": units,
+            "difficulty": difficulty,
+            "source": source,
+            "tag": tag_raw,
+            "tags": tags,
+        },
     )
 
 
@@ -714,7 +1359,7 @@ DEFAULT_EXAM_OPTS = {
     "title_size": "36px",
     "title_align": "left",
     "columns": 2,
-    "gap": "8mm",
+    "gap": "40mm",
     "show_meta": True,
     "hide": [],
 }
@@ -745,12 +1390,24 @@ def _normalize_per_page(v) -> int:
     return n if n in PER_PAGE_OPTIONS else 0
 
 
-def _render_exam(problems, per_page, opts, saved_id=None):
+def _fetch_concepts_in_order(ids: list[int]) -> list[sqlite3.Row]:
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
+    rows = get_db().execute(
+        f"SELECT * FROM concepts WHERE id IN ({placeholders})", ids
+    ).fetchall()
+    by_id = {r["id"]: r for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def _render_exam(problems, per_page, opts, saved_id=None, concepts=None):
     uid = current_user_id()
     return render_template(
         "exam.html",
         problems=problems,
         problem_pages=_chunk(problems, per_page),
+        concepts=concepts or [],
         per_page=per_page,
         per_page_options=PER_PAGE_OPTIONS,
         today=datetime.now().strftime("%Y-%m-%d"),
@@ -761,45 +1418,191 @@ def _render_exam(problems, per_page, opts, saved_id=None):
     )
 
 
+def _parse_id_list(values: list[str]) -> list[int]:
+    out: list[int] = []
+    for v in values:
+        try:
+            out.append(int(v))
+        except ValueError:
+            continue
+    return out
+
+
 @app.route("/exam")
 @login_required
 def exam():
-    raw_ids = request.args.getlist("ids")
-    ids: list[int] = []
-    for v in raw_ids:
-        try:
-            ids.append(int(v))
-        except ValueError:
-            continue
+    ids         = _parse_id_list(request.args.getlist("ids"))
+    concept_ids = _parse_id_list(request.args.getlist("concept_ids"))
 
     problems = _fetch_problems_in_order(ids)
+    concepts = _fetch_concepts_in_order(concept_ids)
     per_page = _normalize_per_page(request.args.get("per_page", "0"))
-    return _render_exam(problems, per_page, dict(DEFAULT_EXAM_OPTS))
+    return _render_exam(problems, per_page, dict(DEFAULT_EXAM_OPTS),
+                        concepts=concepts)
 
 
-# ----- saved exams (per-user) -----
+# ----- saved exams (per-user) with folders -----
+def _exam_count(row) -> int:
+    try:
+        return len(json.loads(row["problem_ids"]))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _get_owned_folder(fid: int) -> sqlite3.Row | None:
+    """Return folder row if owned by current user. None for fid=0/None (root).
+    Aborts if fid given but not owned."""
+    if not fid:
+        return None
+    row = get_db().execute(
+        "SELECT * FROM exam_folders WHERE id=?", (fid,)
+    ).fetchone()
+    if row is None:
+        abort(404)
+    if row["user_id"] != current_user_id() and not is_admin():
+        abort(403)
+    return row
+
+
+def _folder_breadcrumb(fid: int | None) -> list[dict]:
+    """Return [root, ..., current] folder chain. root entry has id=None."""
+    chain: list[dict] = []
+    cur_id = fid
+    db = get_db()
+    while cur_id:
+        row = db.execute(
+            "SELECT id, parent_id, name FROM exam_folders WHERE id=?", (cur_id,)
+        ).fetchone()
+        if row is None:
+            break
+        chain.append({"id": row["id"], "name": row["name"]})
+        cur_id = row["parent_id"]
+    chain.reverse()
+    return [{"id": None, "name": "보관함"}] + chain
+
+
 @app.get("/exams")
 @login_required
 def exams_list():
     uid = current_user_id()
-    rows = get_db().execute(
-        "SELECT id, title, problem_ids, created_at FROM exams "
-        "WHERE user_id = ? ORDER BY id DESC",
-        (uid,),
-    ).fetchall()
-    items = []
-    for r in rows:
+    q = (request.args.get("q") or "").strip()
+    folder_id_raw = request.args.get("folder_id", "")
+    folder_id: int | None = None
+    if folder_id_raw:
         try:
-            n = len(json.loads(r["problem_ids"]))
-        except (TypeError, ValueError):
-            n = 0
-        items.append({
+            folder_id = int(folder_id_raw)
+        except ValueError:
+            folder_id = None
+
+    db = get_db()
+    if folder_id is not None:
+        _get_owned_folder(folder_id)
+
+    if q:
+        exams = db.execute(
+            "SELECT id, title, problem_ids, created_at, folder_id "
+            "FROM exams WHERE user_id=? AND title LIKE ? "
+            "ORDER BY id DESC",
+            (uid, f"%{q}%"),
+        ).fetchall()
+        folder_path_cache: dict[int, str] = {}
+
+        def folder_path(fid: int | None) -> str:
+            if not fid:
+                return "보관함"
+            if fid in folder_path_cache:
+                return folder_path_cache[fid]
+            chain = []
+            cur = fid
+            while cur:
+                r = db.execute(
+                    "SELECT id, parent_id, name FROM exam_folders WHERE id=?",
+                    (cur,),
+                ).fetchone()
+                if r is None:
+                    break
+                chain.append(r["name"])
+                cur = r["parent_id"]
+            label = "보관함 > " + " > ".join(reversed(chain))
+            folder_path_cache[fid] = label
+            return label
+
+        items = [{
             "id": r["id"],
             "title": r["title"],
-            "count": n,
+            "count": _exam_count(r),
             "created_at": r["created_at"],
-        })
-    return render_template("exams.html", items=items)
+            "folder_id": r["folder_id"],
+            "folder_label": folder_path(r["folder_id"]),
+        } for r in exams]
+        subfolders = []
+        breadcrumb = [{"id": None, "name": "보관함"}]
+    else:
+        if folder_id is None:
+            subfolders = db.execute(
+                "SELECT id, name FROM exam_folders "
+                "WHERE user_id=? AND parent_id IS NULL "
+                "ORDER BY position, id",
+                (uid,),
+            ).fetchall()
+            exam_rows = db.execute(
+                "SELECT id, title, problem_ids, created_at, folder_id "
+                "FROM exams WHERE user_id=? AND folder_id IS NULL "
+                "ORDER BY id DESC",
+                (uid,),
+            ).fetchall()
+        else:
+            subfolders = db.execute(
+                "SELECT id, name FROM exam_folders "
+                "WHERE user_id=? AND parent_id=? "
+                "ORDER BY position, id",
+                (uid, folder_id),
+            ).fetchall()
+            exam_rows = db.execute(
+                "SELECT id, title, problem_ids, created_at, folder_id "
+                "FROM exams WHERE user_id=? AND folder_id=? "
+                "ORDER BY id DESC",
+                (uid, folder_id),
+            ).fetchall()
+        items = [{
+            "id": r["id"],
+            "title": r["title"],
+            "count": _exam_count(r),
+            "created_at": r["created_at"],
+            "folder_id": r["folder_id"],
+        } for r in exam_rows]
+        breadcrumb = _folder_breadcrumb(folder_id)
+
+    all_folder_rows = db.execute(
+        "SELECT id, parent_id, name FROM exam_folders "
+        "WHERE user_id=? ORDER BY parent_id, position, id",
+        (uid,),
+    ).fetchall()
+    folder_by_id = {r["id"]: dict(r) for r in all_folder_rows}
+
+    def label_of(fid: int) -> str:
+        parts = []
+        cur = fid
+        while cur:
+            r = folder_by_id.get(cur)
+            if not r:
+                break
+            parts.append(r["name"])
+            cur = r["parent_id"]
+        return " > ".join(reversed(parts))
+
+    all_folders = [{"id": fid, "label": label_of(fid)}
+                   for fid in folder_by_id]
+
+    return render_template(
+        "exams.html",
+        items=items,
+        subfolders=[{"id": r["id"], "name": r["name"]} for r in subfolders],
+        breadcrumb=breadcrumb,
+        current_folder_id=folder_id,
+        all_folders=all_folders,
+        q=q,
+    )
 
 
 @app.post("/exams")
@@ -817,6 +1620,15 @@ def exams_save():
     if not ids:
         return jsonify(error="문제가 비어있습니다."), 400
 
+    folder_id_raw = data.get("folder_id")
+    folder_id: int | None = None
+    if folder_id_raw:
+        try:
+            folder_id = int(folder_id_raw)
+        except (TypeError, ValueError):
+            return jsonify(error="폴더가 올바르지 않습니다."), 400
+        _get_owned_folder(folder_id)
+
     opts = dict(DEFAULT_EXAM_OPTS)
     for k in opts.keys():
         if k in data and data[k] is not None:
@@ -825,18 +1637,117 @@ def exams_save():
 
     db = get_db()
     cur = db.execute(
-        "INSERT INTO exams (user_id, title, problem_ids, options, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO exams (user_id, title, problem_ids, options, created_at, folder_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         (
             current_user_id(),
             title,
             json.dumps(ids),
             json.dumps(opts, ensure_ascii=False),
             datetime.utcnow().isoformat(timespec="seconds"),
+            folder_id,
         ),
     )
     db.commit()
     return jsonify(ok=True, id=cur.lastrowid, title=title)
+
+
+# ----- exam folders -----
+@app.post("/exam_folders")
+@login_required
+def exam_folders_create():
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        flash("폴더 이름을 입력하세요.", "error")
+        return redirect(request.referrer or url_for("exams_list"))
+    if len(name) > 60:
+        flash("폴더 이름은 60자 이내로 입력하세요.", "error")
+        return redirect(request.referrer or url_for("exams_list"))
+    parent_raw = request.form.get("parent_id", "")
+    parent_id: int | None = None
+    if parent_raw:
+        try:
+            parent_id = int(parent_raw)
+        except ValueError:
+            abort(400)
+        _get_owned_folder(parent_id)
+
+    db = get_db()
+    next_pos = db.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM exam_folders "
+        "WHERE user_id=? AND COALESCE(parent_id, 0) = COALESCE(?, 0)",
+        (current_user_id(), parent_id),
+    ).fetchone()[0]
+    db.execute(
+        "INSERT INTO exam_folders (user_id, parent_id, name, position, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (current_user_id(), parent_id, name, next_pos,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    db.commit()
+    flash(f"폴더 '{name}' 을 만들었습니다.", "success")
+    return redirect(url_for("exams_list", folder_id=parent_id) if parent_id
+                    else url_for("exams_list"))
+
+
+@app.post("/exam_folders/<int:fid>/rename")
+@login_required
+def exam_folders_rename(fid):
+    folder = _get_owned_folder(fid)
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        flash("폴더 이름을 입력하세요.", "error")
+    elif len(name) > 60:
+        flash("폴더 이름은 60자 이내로 입력하세요.", "error")
+    else:
+        db = get_db()
+        db.execute("UPDATE exam_folders SET name=? WHERE id=?", (name, fid))
+        db.commit()
+        flash("폴더 이름을 변경했습니다.", "success")
+    return redirect(url_for("exams_list",
+                            folder_id=folder["parent_id"]) if folder["parent_id"]
+                    else url_for("exams_list"))
+
+
+@app.post("/exam_folders/<int:fid>/delete")
+@login_required
+def exam_folders_delete(fid):
+    folder = _get_owned_folder(fid)
+    db = get_db()
+    child_cnt = db.execute(
+        "SELECT COUNT(*) FROM exam_folders WHERE parent_id=?", (fid,)
+    ).fetchone()[0]
+    exam_cnt = db.execute(
+        "SELECT COUNT(*) FROM exams WHERE folder_id=?", (fid,)
+    ).fetchone()[0]
+    if child_cnt + exam_cnt > 0:
+        flash(f"폴더 '{folder['name']}' 안에 하위 폴더 {child_cnt}개 · "
+              f"시험지 {exam_cnt}개가 있어 삭제할 수 없습니다.", "error")
+    else:
+        db.execute("DELETE FROM exam_folders WHERE id=?", (fid,))
+        db.commit()
+        flash(f"폴더 '{folder['name']}' 을 삭제했습니다.", "success")
+    return redirect(url_for("exams_list",
+                            folder_id=folder["parent_id"]) if folder["parent_id"]
+                    else url_for("exams_list"))
+
+
+@app.post("/exams/<int:eid>/move")
+@login_required
+def exams_move(eid):
+    row = _get_owned_exam(eid)
+    target_raw = request.form.get("folder_id", "")
+    target_id: int | None = None
+    if target_raw:
+        try:
+            target_id = int(target_raw)
+        except ValueError:
+            abort(400)
+        _get_owned_folder(target_id)
+    db = get_db()
+    db.execute("UPDATE exams SET folder_id=? WHERE id=?", (target_id, eid))
+    db.commit()
+    return redirect(request.referrer or url_for("exams_list"))
 
 
 def _get_owned_exam(eid: int) -> sqlite3.Row:
@@ -883,6 +1794,332 @@ def exams_delete(eid):
     db.commit()
     flash(f"'{row['title']}' 시험지를 보관함에서 삭제했습니다.", "success")
     return redirect(url_for("exams_list"))
+
+
+# ----- posts: 공지사항(notice) / 문의(inquiry) -----
+def _get_post(pid: int, board: str) -> sqlite3.Row:
+    row = get_db().execute(
+        "SELECT p.*, u.username AS author "
+        "FROM posts p LEFT JOIN users u ON u.id = p.user_id "
+        "WHERE p.id = ? AND p.board = ?",
+        (pid, board),
+    ).fetchone()
+    if row is None:
+        abort(404)
+    return row
+
+
+def _parse_post_form(*, edit_image: str | None = None):
+    """Parse title/body/image. Returns (ok, title, body, image_name, remove_image)."""
+    title = request.form.get("title", "").strip()
+    body = request.form.get("body", "").strip()
+    image_file = request.files.get("image")
+    remove_image = request.form.get("remove_image") == "1"
+
+    if not title:
+        flash("제목을 입력하세요.", "error")
+        return False, None, None, None, False
+    if len(title) > 200:
+        flash("제목은 200자 이내로 입력하세요.", "error")
+        return False, None, None, None, False
+
+    image_name = None
+    if image_file and image_file.filename:
+        if not allowed_file(image_file.filename):
+            flash("이미지 형식이 올바르지 않습니다 (png/jpg/jpeg/gif/webp).", "error")
+            return False, None, None, None, False
+        image_name = save_upload(image_file)
+
+    return True, title, body, image_name, remove_image
+
+
+# --- 공지사항 (notice): admin write, all users read ---
+@app.get("/notices")
+@login_required
+def notices_list():
+    rows = get_db().execute(
+        "SELECT p.id, p.title, p.created_at, u.username AS author "
+        "FROM posts p LEFT JOIN users u ON u.id = p.user_id "
+        "WHERE p.board = 'notice' ORDER BY p.id DESC"
+    ).fetchall()
+    return render_template("notices.html", items=rows)
+
+
+@app.get("/notices/new")
+@admin_required
+def notices_new():
+    return render_template("notice_form.html", post=None)
+
+
+@app.post("/notices")
+@admin_required
+def notices_create():
+    ok, title, body, image_name, _ = _parse_post_form()
+    if not ok:
+        return redirect(url_for("notices_new"))
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO posts (board, user_id, title, body, image, created_at) "
+        "VALUES ('notice', ?, ?, ?, ?, ?)",
+        (current_user_id(), title, body, image_name,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    save_attachments(db, cur.lastrowid, request.files.getlist("attachments"))
+    db.commit()
+    flash("공지사항이 등록되었습니다.", "success")
+    return redirect(url_for("notices_list"))
+
+
+@app.get("/notices/<int:pid>")
+@login_required
+def notices_view(pid):
+    post = _get_post(pid, "notice")
+    attachments = get_post_attachments(get_db(), pid)
+    return render_template("notice_view.html", post=post, attachments=attachments)
+
+
+@app.get("/notices/<int:pid>/edit")
+@admin_required
+def notices_edit_form(pid):
+    post = _get_post(pid, "notice")
+    attachments = get_post_attachments(get_db(), pid)
+    return render_template("notice_form.html", post=post, attachments=attachments)
+
+
+@app.post("/notices/<int:pid>/edit")
+@admin_required
+def notices_edit(pid):
+    post = _get_post(pid, "notice")
+    ok, title, body, new_image, remove_image = _parse_post_form()
+    if not ok:
+        return redirect(url_for("notices_edit_form", pid=pid))
+    image = post["image"]
+    if new_image:
+        delete_upload(image)
+        image = new_image
+    elif remove_image:
+        delete_upload(image)
+        image = None
+    db = get_db()
+    db.execute(
+        "UPDATE posts SET title=?, body=?, image=? WHERE id=?",
+        (title, body, image, pid),
+    )
+    remove_aids = [int(x) for x in request.form.getlist("remove_attach") if x.isdigit()]
+    if remove_aids:
+        delete_post_attachments(db, pid, only_ids=remove_aids)
+    save_attachments(db, pid, request.files.getlist("attachments"))
+    db.commit()
+    flash("공지사항이 수정되었습니다.", "success")
+    return redirect(url_for("notices_view", pid=pid))
+
+
+@app.post("/notices/<int:pid>/delete")
+@admin_required
+def notices_delete(pid):
+    post = _get_post(pid, "notice")
+    delete_upload(post["image"])
+    db = get_db()
+    delete_post_attachments(db, pid)
+    db.execute("DELETE FROM posts WHERE id=?", (pid,))
+    db.commit()
+    flash("공지사항을 삭제했습니다.", "success")
+    return redirect(url_for("notices_list"))
+
+
+# --- 문의/건의 (inquiry): user writes, admin reads all (user sees own only) ---
+@app.get("/inquiries")
+@login_required
+def inquiries_list():
+    db = get_db()
+    if is_admin():
+        rows = db.execute(
+            "SELECT p.id, p.title, p.created_at, u.username AS author "
+            "FROM posts p LEFT JOIN users u ON u.id = p.user_id "
+            "WHERE p.board = 'inquiry' ORDER BY p.id DESC"
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT p.id, p.title, p.created_at, u.username AS author "
+            "FROM posts p LEFT JOIN users u ON u.id = p.user_id "
+            "WHERE p.board = 'inquiry' AND p.user_id = ? ORDER BY p.id DESC",
+            (current_user_id(),),
+        ).fetchall()
+    return render_template("inquiries.html", items=rows)
+
+
+@app.get("/inquiries/new")
+@login_required
+def inquiries_new():
+    return render_template("inquiry_form.html")
+
+
+@app.post("/inquiries")
+@login_required
+def inquiries_create():
+    ok, title, body, image_name, _ = _parse_post_form()
+    if not ok:
+        return redirect(url_for("inquiries_new"))
+    db = get_db()
+    db.execute(
+        "INSERT INTO posts (board, user_id, title, body, image, created_at) "
+        "VALUES ('inquiry', ?, ?, ?, ?, ?)",
+        (current_user_id(), title, body, image_name,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    db.commit()
+    flash("문의가 등록되었습니다.", "success")
+    return redirect(url_for("inquiries_list"))
+
+
+@app.get("/inquiries/<int:pid>")
+@login_required
+def inquiries_view(pid):
+    post = _get_post(pid, "inquiry")
+    if post["user_id"] != current_user_id() and not is_admin():
+        abort(403)
+    return render_template("inquiry_view.html", post=post)
+
+
+@app.post("/inquiries/<int:pid>/delete")
+@login_required
+def inquiries_delete(pid):
+    post = _get_post(pid, "inquiry")
+    if post["user_id"] != current_user_id() and not is_admin():
+        abort(403)
+    delete_upload(post["image"])
+    db = get_db()
+    db.execute("DELETE FROM posts WHERE id=?", (pid,))
+    db.commit()
+    flash("문의를 삭제했습니다.", "success")
+    return redirect(url_for("inquiries_list"))
+
+
+# --- 자료실 (material): any user writes, all users read ---
+def _can_edit_material(post) -> bool:
+    return is_admin() or post["user_id"] == current_user_id()
+
+
+@app.get("/materials")
+@login_required
+def materials_list():
+    rows = get_db().execute(
+        "SELECT p.id, p.title, p.created_at, u.username AS author, "
+        "(SELECT COUNT(*) FROM post_attachments a WHERE a.post_id = p.id) AS attach_count "
+        "FROM posts p LEFT JOIN users u ON u.id = p.user_id "
+        "WHERE p.board = 'material' ORDER BY p.id DESC"
+    ).fetchall()
+    return render_template("materials.html", items=rows)
+
+
+@app.get("/materials/new")
+@login_required
+def materials_new():
+    return render_template("material_form.html", post=None, attachments=[])
+
+
+@app.post("/materials")
+@login_required
+def materials_create():
+    ok, title, body, image_name, _ = _parse_post_form()
+    if not ok:
+        return redirect(url_for("materials_new"))
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO posts (board, user_id, title, body, image, created_at) "
+        "VALUES ('material', ?, ?, ?, ?, ?)",
+        (current_user_id(), title, body, image_name,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    save_attachments(db, cur.lastrowid, request.files.getlist("attachments"))
+    db.commit()
+    flash("자료가 등록되었습니다.", "success")
+    return redirect(url_for("materials_list"))
+
+
+@app.get("/materials/<int:pid>")
+@login_required
+def materials_view(pid):
+    post = _get_post(pid, "material")
+    attachments = get_post_attachments(get_db(), pid)
+    return render_template(
+        "material_view.html", post=post, attachments=attachments,
+        can_edit=_can_edit_material(post),
+    )
+
+
+@app.get("/materials/<int:pid>/edit")
+@login_required
+def materials_edit_form(pid):
+    post = _get_post(pid, "material")
+    if not _can_edit_material(post):
+        abort(403)
+    attachments = get_post_attachments(get_db(), pid)
+    return render_template("material_form.html", post=post, attachments=attachments)
+
+
+@app.post("/materials/<int:pid>/edit")
+@login_required
+def materials_edit(pid):
+    post = _get_post(pid, "material")
+    if not _can_edit_material(post):
+        abort(403)
+    ok, title, body, new_image, remove_image = _parse_post_form()
+    if not ok:
+        return redirect(url_for("materials_edit_form", pid=pid))
+    image = post["image"]
+    if new_image:
+        delete_upload(image)
+        image = new_image
+    elif remove_image:
+        delete_upload(image)
+        image = None
+    db = get_db()
+    db.execute(
+        "UPDATE posts SET title=?, body=?, image=? WHERE id=?",
+        (title, body, image, pid),
+    )
+    remove_aids = [int(x) for x in request.form.getlist("remove_attach") if x.isdigit()]
+    if remove_aids:
+        delete_post_attachments(db, pid, only_ids=remove_aids)
+    save_attachments(db, pid, request.files.getlist("attachments"))
+    db.commit()
+    flash("자료가 수정되었습니다.", "success")
+    return redirect(url_for("materials_view", pid=pid))
+
+
+@app.post("/materials/<int:pid>/delete")
+@login_required
+def materials_delete(pid):
+    post = _get_post(pid, "material")
+    if not _can_edit_material(post):
+        abort(403)
+    delete_upload(post["image"])
+    db = get_db()
+    delete_post_attachments(db, pid)
+    db.execute("DELETE FROM posts WHERE id=?", (pid,))
+    db.commit()
+    flash("자료를 삭제했습니다.", "success")
+    return redirect(url_for("materials_list"))
+
+
+@app.get("/attachments/<int:aid>")
+@login_required
+def attachment_download(aid):
+    row = get_db().execute(
+        "SELECT a.original_name, a.stored_name, a.mime, p.board, p.user_id "
+        "FROM post_attachments a JOIN posts p ON p.id = a.post_id "
+        "WHERE a.id = ?", (aid,)
+    ).fetchone()
+    if not row:
+        abort(404)
+    # Inquiry attachments are private; restrict to author or admin
+    if row["board"] == "inquiry" and not is_admin() and row["user_id"] != current_user_id():
+        abort(403)
+    return send_from_directory(
+        UPLOAD_DIR, row["stored_name"],
+        as_attachment=True, download_name=row["original_name"],
+    )
 
 
 # ----- user management (admin only) -----
@@ -973,12 +2210,301 @@ def users_delete(uid):
     ).fetchone()
     if logo and logo["value"]:
         delete_upload(logo["value"])
+    # Clean up post images and attachments uploaded by this user
+    post_images = db.execute(
+        "SELECT image FROM posts WHERE user_id = ? AND image IS NOT NULL",
+        (uid,),
+    ).fetchall()
+    for r in post_images:
+        delete_upload(r["image"])
+    user_post_ids = [
+        r["id"] for r in db.execute(
+            "SELECT id FROM posts WHERE user_id = ?", (uid,)
+        ).fetchall()
+    ]
+    for pid in user_post_ids:
+        delete_post_attachments(db, pid)
+    db.execute("DELETE FROM posts    WHERE user_id = ?", (uid,))
     db.execute("DELETE FROM exams    WHERE user_id = ?", (uid,))
     db.execute("DELETE FROM settings WHERE user_id = ?", (uid,))
     db.execute("DELETE FROM users    WHERE id = ?", (uid,))
     db.commit()
     flash(f"사용자 '{row['username']}' 및 관련 데이터를 삭제했습니다.", "success")
     return redirect(url_for("users_list"))
+
+
+# ---------- 학습 게시판 (video board) ----------
+_YT_PATTERNS = (
+    re.compile(r"youtu\.be/([A-Za-z0-9_-]{6,})"),
+    re.compile(r"youtube\.com/watch\?(?:[^#]*&)?v=([A-Za-z0-9_-]{6,})"),
+    re.compile(r"youtube\.com/embed/([A-Za-z0-9_-]{6,})"),
+    re.compile(r"youtube\.com/shorts/([A-Za-z0-9_-]{6,})"),
+)
+
+
+def _yt_video_id(url):
+    if not url:
+        return None
+    for pat in _YT_PATTERNS:
+        m = pat.search(url)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _yt_embed(url):
+    vid = _yt_video_id(url)
+    return f"https://www.youtube.com/embed/{vid}" if vid else None
+
+
+def _yt_thumb(url):
+    vid = _yt_video_id(url)
+    return f"https://img.youtube.com/vi/{vid}/hqdefault.jpg" if vid else None
+
+
+def _learning_folder_or_404(fid):
+    row = get_db().execute(
+        "SELECT * FROM learning_folders WHERE id=?", (fid,)
+    ).fetchone()
+    if not row:
+        abort(404)
+    return row
+
+
+def _learning_breadcrumb(fid):
+    db = get_db()
+    chain = []
+    cur = fid
+    seen = set()
+    while cur is not None and cur not in seen:
+        seen.add(cur)
+        row = db.execute(
+            "SELECT id, parent_id, name FROM learning_folders WHERE id=?",
+            (cur,),
+        ).fetchone()
+        if not row:
+            break
+        chain.append(row)
+        cur = row["parent_id"]
+    return list(reversed(chain))
+
+
+def _learning_descendants(fid):
+    db = get_db()
+    out = []
+    stack = [fid]
+    while stack:
+        cur = stack.pop()
+        out.append(cur)
+        children = db.execute(
+            "SELECT id FROM learning_folders WHERE parent_id=?", (cur,)
+        ).fetchall()
+        stack.extend(c["id"] for c in children)
+    return out
+
+
+@app.get("/learning")
+@login_required
+def learning_index():
+    roots = get_db().execute(
+        "SELECT id, name FROM learning_folders "
+        "WHERE parent_id IS NULL ORDER BY position, id"
+    ).fetchall()
+    return render_template("learning_index.html", roots=roots)
+
+
+@app.get("/learning/folder/<int:fid>")
+@login_required
+def learning_folder(fid):
+    folder = _learning_folder_or_404(fid)
+    db = get_db()
+    subfolders = db.execute(
+        "SELECT id, name FROM learning_folders "
+        "WHERE parent_id=? ORDER BY position, id",
+        (fid,),
+    ).fetchall()
+    video_rows = db.execute(
+        "SELECT id, title, url FROM learning_videos "
+        "WHERE folder_id=? ORDER BY position, id",
+        (fid,),
+    ).fetchall()
+    videos = [
+        {"id": v["id"], "title": v["title"], "url": v["url"],
+         "thumb": _yt_thumb(v["url"])}
+        for v in video_rows
+    ]
+    return render_template(
+        "learning_folder.html",
+        folder=folder,
+        subfolders=subfolders,
+        videos=videos,
+        breadcrumb=_learning_breadcrumb(fid),
+        is_root=(folder["parent_id"] is None),
+    )
+
+
+@app.post("/learning/folder/new")
+@admin_required
+def learning_folder_new():
+    parent_id = request.form.get("parent_id", type=int)
+    name = (request.form.get("name") or "").strip()
+    if not parent_id:
+        flash("최상위(초등/중등/고등) 아래에서만 폴더를 만들 수 있습니다.", "error")
+        return redirect(url_for("learning_index"))
+    if not name:
+        flash("폴더 이름을 입력하세요.", "error")
+        return redirect(url_for("learning_folder", fid=parent_id))
+    db = get_db()
+    if not db.execute(
+        "SELECT 1 FROM learning_folders WHERE id=?", (parent_id,)
+    ).fetchone():
+        abort(404)
+    pos = db.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM learning_folders "
+        "WHERE parent_id=?",
+        (parent_id,),
+    ).fetchone()[0]
+    db.execute(
+        "INSERT INTO learning_folders "
+        "(parent_id, name, position, created_at) VALUES (?, ?, ?, ?)",
+        (parent_id, name, pos,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    db.commit()
+    flash("폴더가 추가되었습니다.", "success")
+    return redirect(url_for("learning_folder", fid=parent_id))
+
+
+@app.post("/learning/folder/<int:fid>/rename")
+@admin_required
+def learning_folder_rename(fid):
+    folder = _learning_folder_or_404(fid)
+    if folder["parent_id"] is None:
+        flash("최상위 폴더(초등/중등/고등)는 이름을 바꿀 수 없습니다.", "error")
+        return redirect(url_for("learning_folder", fid=fid))
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        flash("폴더 이름을 입력하세요.", "error")
+        return redirect(url_for("learning_folder", fid=fid))
+    db = get_db()
+    db.execute("UPDATE learning_folders SET name=? WHERE id=?", (name, fid))
+    db.commit()
+    flash("폴더 이름이 변경되었습니다.", "success")
+    return redirect(url_for("learning_folder", fid=fid))
+
+
+@app.post("/learning/folder/<int:fid>/delete")
+@admin_required
+def learning_folder_delete(fid):
+    folder = _learning_folder_or_404(fid)
+    if folder["parent_id"] is None:
+        flash("최상위 폴더(초등/중등/고등)는 삭제할 수 없습니다.", "error")
+        return redirect(url_for("learning_folder", fid=fid))
+    parent_id = folder["parent_id"]
+    db = get_db()
+    ids = _learning_descendants(fid)
+    placeholders = ",".join("?" * len(ids))
+    db.execute(
+        f"DELETE FROM learning_videos WHERE folder_id IN ({placeholders})",
+        ids,
+    )
+    db.execute(
+        f"DELETE FROM learning_folders WHERE id IN ({placeholders})",
+        ids,
+    )
+    db.commit()
+    flash("폴더와 하위 항목을 삭제했습니다.", "success")
+    return redirect(url_for("learning_folder", fid=parent_id))
+
+
+@app.post("/learning/video/new")
+@admin_required
+def learning_video_new():
+    folder_id = request.form.get("folder_id", type=int)
+    title = (request.form.get("title") or "").strip()
+    url = (request.form.get("url") or "").strip()
+    description = (request.form.get("description") or "").strip()
+    if not folder_id:
+        abort(400)
+    if not title or not url:
+        flash("제목과 영상 링크는 필수입니다.", "error")
+        return redirect(url_for("learning_folder", fid=folder_id))
+    db = get_db()
+    if not db.execute(
+        "SELECT 1 FROM learning_folders WHERE id=?", (folder_id,)
+    ).fetchone():
+        abort(404)
+    pos = db.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM learning_videos "
+        "WHERE folder_id=?",
+        (folder_id,),
+    ).fetchone()[0]
+    db.execute(
+        "INSERT INTO learning_videos "
+        "(folder_id, title, url, description, position, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (folder_id, title, url, description, pos,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    db.commit()
+    flash("영상이 추가되었습니다.", "success")
+    return redirect(url_for("learning_folder", fid=folder_id))
+
+
+@app.get("/learning/video/<int:vid>")
+@login_required
+def learning_video_view(vid):
+    v = get_db().execute(
+        "SELECT * FROM learning_videos WHERE id=?", (vid,)
+    ).fetchone()
+    if not v:
+        abort(404)
+    return render_template(
+        "learning_video.html",
+        video=v,
+        embed=_yt_embed(v["url"]),
+        breadcrumb=_learning_breadcrumb(v["folder_id"]),
+    )
+
+
+@app.post("/learning/video/<int:vid>/edit")
+@admin_required
+def learning_video_edit(vid):
+    v = get_db().execute(
+        "SELECT * FROM learning_videos WHERE id=?", (vid,)
+    ).fetchone()
+    if not v:
+        abort(404)
+    title = (request.form.get("title") or "").strip()
+    url = (request.form.get("url") or "").strip()
+    description = (request.form.get("description") or "").strip()
+    if not title or not url:
+        flash("제목과 영상 링크는 필수입니다.", "error")
+        return redirect(url_for("learning_video_view", vid=vid))
+    db = get_db()
+    db.execute(
+        "UPDATE learning_videos SET title=?, url=?, description=? WHERE id=?",
+        (title, url, description, vid),
+    )
+    db.commit()
+    flash("영상이 수정되었습니다.", "success")
+    return redirect(url_for("learning_video_view", vid=vid))
+
+
+@app.post("/learning/video/<int:vid>/delete")
+@admin_required
+def learning_video_delete(vid):
+    v = get_db().execute(
+        "SELECT folder_id FROM learning_videos WHERE id=?", (vid,)
+    ).fetchone()
+    if not v:
+        abort(404)
+    folder_id = v["folder_id"]
+    db = get_db()
+    db.execute("DELETE FROM learning_videos WHERE id=?", (vid,))
+    db.commit()
+    flash("영상을 삭제했습니다.", "success")
+    return redirect(url_for("learning_folder", fid=folder_id))
 
 
 # Run schema migration at import time so it works under both
@@ -988,6 +2514,6 @@ init_db()
 
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_ENV", "development") != "production"
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5001))
     host = "127.0.0.1" if debug else "0.0.0.0"
     app.run(debug=debug, host=host, port=port)

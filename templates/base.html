@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{% block title %}MathGlab{% endblock %} · MathGlab</title>
+  <title>{% block title %}ScienceGlab{% endblock %} · ScienceGlab</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -11,11 +11,11 @@
         extend: {
           colors: {
             brand: {
-              50:  "#eef2ff",
-              100: "#e0e7ff",
-              500: "#6366f1",
-              600: "#4f46e5",
-              700: "#4338ca",
+              50:  "#fef2f2",
+              100: "#fee2e2",
+              500: "#ef4444",
+              600: "#dc2626",
+              700: "#b91c1c",
             },
           },
         },
@@ -34,8 +34,8 @@
     <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
       <a href="{{ url_for('index') }}" class="flex items-center gap-2 shrink-0">
         <span class="inline-block w-8 h-8 rounded-lg bg-brand-600 text-white
-                     text-center leading-8 font-bold">M</span>
-        <span class="text-xl font-bold tracking-tight">MathGlab</span>
+                     text-center leading-8 font-bold">S</span>
+        <span class="text-xl font-bold tracking-tight">ScienceGlab</span>
       </a>
 
       {% if current_user.id %}
@@ -51,6 +51,16 @@
                     {% if active in ('exams_list', 'exams_open') %}text-brand-700 font-semibold bg-brand-50{% endif %}">
             보관함
           </a>
+          <a href="{{ url_for('learning_index') }}"
+             class="px-3 py-2 rounded-md hover:bg-slate-100
+                    {% if active in ('learning_index','learning_folder','learning_video_view') %}text-brand-700 font-semibold bg-brand-50{% endif %}">
+            동영상 학습
+          </a>
+          <a href="{{ url_for('notices_list') }}"
+             class="px-3 py-2 rounded-md hover:bg-slate-100
+                    {% if active in ('notices_list','notices_view','notices_new','notices_edit_form','inquiries_list','inquiries_view','inquiries_new','materials_list','materials_view','materials_new','materials_edit_form') %}text-brand-700 font-semibold bg-brand-50{% endif %}">
+            게시판
+          </a>
           <a href="{{ url_for('settings_page') }}"
              class="px-3 py-2 rounded-md hover:bg-slate-100
                     {% if active == 'settings_page' %}text-brand-700 font-semibold bg-brand-50{% endif %}">
@@ -59,11 +69,26 @@
 
           {% if current_user.is_admin %}
             <span class="mx-2 text-slate-200">|</span>
-            <a href="{{ url_for('upload') }}"
-               class="px-3 py-2 rounded-md hover:bg-slate-100
-                      {% if active in ('upload', 'edit_problem') %}text-brand-700 font-semibold bg-brand-50{% endif %}">
-              문제 등록
-            </a>
+            <details class="relative">
+              <summary class="px-3 py-2 rounded-md hover:bg-slate-100 cursor-pointer list-none
+                              [&::-webkit-details-marker]:hidden
+                              {% if active in ('upload','edit_problem','upload_batch') %}text-brand-700 font-semibold bg-brand-50{% endif %}">
+                문제 등록 <span class="text-xs">▾</span>
+              </summary>
+              <div class="absolute top-full left-0 mt-1 py-1 min-w-[160px] z-20
+                          bg-white border border-slate-200 rounded-md shadow-md">
+                <a href="{{ url_for('upload') }}"
+                   class="block px-4 py-2 text-sm hover:bg-slate-100 whitespace-nowrap
+                          {% if active in ('upload','edit_problem') %}text-brand-700 font-semibold{% endif %}">
+                  문제 등록
+                </a>
+                <a href="{{ url_for('upload_batch') }}"
+                   class="block px-4 py-2 text-sm hover:bg-slate-100 whitespace-nowrap
+                          {% if active == 'upload_batch' %}text-brand-700 font-semibold{% endif %}">
+                  PDF 일괄 등록
+                </a>
+              </div>
+            </details>
             <a href="{{ url_for('units_page') }}"
                class="px-3 py-2 rounded-md hover:bg-slate-100
                       {% if active == 'units_page' %}text-brand-700 font-semibold bg-brand-50{% endif %}">
@@ -112,7 +137,7 @@
   </main>
 
   <footer class="border-t border-slate-200 mt-12 py-6 text-center text-xs text-slate-400">
-    © MathGlab
+    © ScienceGlab
   </footer>
 
   {% block scripts %}{% endblock %}

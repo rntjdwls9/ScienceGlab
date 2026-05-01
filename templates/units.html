@@ -1,20 +1,58 @@
 {% extends "base.html" %}
 {% block title %}단원 관리{% endblock %}
 
-{% macro render_node(node, depth) %}
+{% block head %}
+<style>
+  .unit-row { transition: background-color .1s; }
+  .unit-row.dragging { opacity: .4; }
+  /* 드롭 표시선 */
+  li.unit-li.drop-before > .unit-row { box-shadow: inset 0 3px 0 0 #dc2626; }
+  li.unit-li.drop-after  > .unit-row { box-shadow: inset 0 -3px 0 0 #dc2626; }
+  /* 드래그 핸들 */
+  .drag-handle { cursor: grab; user-select: none; }
+  .drag-handle:active { cursor: grabbing; }
+</style>
+{% endblock %}
+
+{% macro render_node(node, depth, is_first, is_last) %}
   {% set used = counts.get(node.path, 0) %}
   {% set has_children = node.children|length > 0 %}
-  <li class="border-t border-slate-200 first:border-t-0">
-    <div class="flex items-center gap-2 px-3 py-2 hover:bg-slate-50"
-         style="padding-left: {{ 0.75 + depth * 1.5 }}rem">
+  <li class="unit-li border-t border-slate-200 first:border-t-0"
+      draggable="true"
+      data-uid="{{ node.id }}"
+      data-parent-id="{{ node.parent_id or 0 }}">
+    <div class="unit-row flex items-center gap-2 px-3 py-2 hover:bg-slate-50"
+         style="padding-left: {{ 0.5 + depth * 1.5 }}rem">
+      <span class="drag-handle text-slate-400 hover:text-slate-600 px-1 select-none"
+            title="드래그해서 순서 변경">⋮⋮</span>
       {% if depth > 0 %}<span class="text-slate-300 select-none">└</span>{% endif %}
       <span class="font-medium">{{ node.name }}</span>
       <span class="text-xs text-slate-400 ml-2">
         {% if used > 0 %}{{ used }}개 문제{% endif %}
       </span>
-      <div class="ml-auto flex items-center gap-2">
+      <div class="ml-auto flex items-center gap-1">
+        <form method="post" action="{{ url_for('units_move', uid=node.id) }}" class="inline">
+          <input type="hidden" name="direction" value="up" />
+          <button type="submit" {% if is_first %}disabled{% endif %}
+                  title="위로"
+                  class="text-xs w-7 h-7 rounded border border-slate-200
+                         {% if is_first %}text-slate-300 cursor-not-allowed
+                         {% else %}text-slate-600 hover:bg-slate-100{% endif %}">
+            ↑
+          </button>
+        </form>
+        <form method="post" action="{{ url_for('units_move', uid=node.id) }}" class="inline">
+          <input type="hidden" name="direction" value="down" />
+          <button type="submit" {% if is_last %}disabled{% endif %}
+                  title="아래로"
+                  class="text-xs w-7 h-7 rounded border border-slate-200
+                         {% if is_last %}text-slate-300 cursor-not-allowed
+                         {% else %}text-slate-600 hover:bg-slate-100{% endif %}">
+            ↓
+          </button>
+        </form>
         <button type="button"
-                class="js-add-child text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-300"
+                class="js-add-child text-xs px-2 py-1 ml-1 rounded border border-slate-200 text-slate-600 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-300"
                 data-parent-id="{{ node.id }}"
                 data-parent-name="{{ node.name }}">
           + 하위
@@ -36,9 +74,11 @@
       </div>
     </div>
     {% if has_children %}
-      {% for child in node.children %}
-        {{ render_node(child, depth + 1) }}
-      {% endfor %}
+      <ul class="unit-children">
+        {% for child in node.children %}
+          {{ render_node(child, depth + 1, loop.first, loop.last) }}
+        {% endfor %}
+      </ul>
     {% endif %}
   </li>
 {% endmacro %}
@@ -47,7 +87,8 @@
 <section class="max-w-3xl mx-auto px-6 py-10">
   <h1 class="text-2xl font-bold mb-1">단원 관리</h1>
   <p class="text-sm text-slate-500 mb-8">
-    단원 안에 하위 단원(폴더)을 만들 수 있습니다. 사용 중이거나 하위 단원이 있는 단원은 삭제할 수 없습니다.
+    단원 안에 하위 단원(폴더)을 만들 수 있습니다. 행을 드래그하거나 ↑/↓ 로 같은 부모 안에서 순서를 바꿀 수 있습니다.
+    사용 중이거나 하위 단원이 있는 단원은 삭제할 수 없습니다.
   </p>
 
   <!-- 최상위 단원 추가 -->
@@ -65,9 +106,9 @@
   </form>
 
   {% if tree %}
-    <ul class="border border-slate-200 rounded-lg overflow-hidden">
+    <ul id="units-root" class="border border-slate-200 rounded-lg overflow-hidden">
       {% for root in tree %}
-        {{ render_node(root, 0) }}
+        {{ render_node(root, 0, loop.first, loop.last) }}
       {% endfor %}
     </ul>
   {% else %}
@@ -80,6 +121,7 @@
 
 {% block scripts %}
 <script>
+  // ---------- 하위 단원 추가 ----------
   document.querySelectorAll('.js-add-child').forEach(btn => {
     btn.addEventListener('click', () => {
       const parentId   = btn.dataset.parentId;
@@ -97,6 +139,76 @@
       f.appendChild(p); f.appendChild(n);
       document.body.appendChild(f);
       f.submit();
+    });
+  });
+
+  // ---------- 드래그 앤 드롭 ----------
+  const REORDER_URL = (uid) => `/units/${uid}/reorder`;
+  let draggedLi = null;
+
+  function clearDropMarkers() {
+    document.querySelectorAll('.unit-li.drop-before, .unit-li.drop-after')
+      .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+  }
+
+  document.querySelectorAll('.unit-li').forEach(li => {
+    li.addEventListener('dragstart', (e) => {
+      // 자식 li 안에서 일어난 dragstart 는 무시 (가장 가까운 li가 드래그 대상)
+      if (e.target !== li) return;
+      draggedLi = li;
+      li.classList.add('dragging');
+      // 드래그 데이터 (필수: setData 호출이 있어야 일부 브라우저에서 dnd 작동)
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', li.dataset.uid);
+    });
+
+    li.addEventListener('dragend', () => {
+      li.classList.remove('dragging');
+      draggedLi = null;
+      clearDropMarkers();
+    });
+
+    li.addEventListener('dragover', (e) => {
+      if (!draggedLi || li === draggedLi) return;
+      // 같은 부모 안에서만 드롭 허용
+      if (li.dataset.parentId !== draggedLi.dataset.parentId) return;
+      // 드래그 중인 항목의 자손에는 드롭 금지
+      if (draggedLi.contains(li)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+
+      const rect = li.querySelector('.unit-row').getBoundingClientRect();
+      const isUpper = (e.clientY - rect.top) < rect.height / 2;
+      clearDropMarkers();
+      li.classList.add(isUpper ? 'drop-before' : 'drop-after');
+    });
+
+    li.addEventListener('dragleave', (e) => {
+      // 자식 요소로 넘어가는 dragleave 는 무시 — relatedTarget 이 li 안에 있으면 패스
+      if (li.contains(e.relatedTarget)) return;
+      li.classList.remove('drop-before', 'drop-after');
+    });
+
+    li.addEventListener('drop', async (e) => {
+      if (!draggedLi || li === draggedLi) return;
+      if (li.dataset.parentId !== draggedLi.dataset.parentId) return;
+      if (draggedLi.contains(li)) return;
+      e.preventDefault();
+
+      const isBefore = li.classList.contains('drop-before');
+      clearDropMarkers();
+
+      const fd = new FormData();
+      fd.append('anchor_uid', li.dataset.uid);
+      fd.append('position', isBefore ? 'before' : 'after');
+      const res = await fetch(REORDER_URL(draggedLi.dataset.uid),
+                              { method: 'POST', body: fd });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        const j = await res.json().catch(() => ({}));
+        alert(j.error || '순서 변경 실패');
+      }
     });
   });
 </script>

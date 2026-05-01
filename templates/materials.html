@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}자료실{% endblock %}
+
+{% block content %}
+<section class="max-w-3xl mx-auto px-6 py-10">
+  <div class="flex border-b border-slate-200 mb-6">
+    <a href="{{ url_for('notices_list') }}"
+       class="px-4 py-2 text-sm font-medium border-b-2 -mb-px
+              border-transparent text-slate-500 hover:text-slate-700">
+      공지사항
+    </a>
+    <a href="{{ url_for('inquiries_list') }}"
+       class="px-4 py-2 text-sm font-medium border-b-2 -mb-px
+              border-transparent text-slate-500 hover:text-slate-700">
+      {% if current_user.is_admin %}문의함{% else %}문의/건의{% endif %}
+    </a>
+    <a href="{{ url_for('materials_list') }}"
+       class="px-4 py-2 text-sm font-medium border-b-2 -mb-px
+              border-brand-600 text-brand-700">
+      자료실
+    </a>
+  </div>
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold mb-1">자료실</h1>
+      <p class="text-sm text-slate-500">학습 자료를 공유하세요. 누구나 글을 등록할 수 있습니다.</p>
+    </div>
+    <a href="{{ url_for('materials_new') }}"
+       class="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md hover:bg-brand-700">
+      + 새 자료
+    </a>
+  </div>
+
+  {% if items %}
+    <ul class="border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-200">
+      {% for it in items %}
+        <li>
+          <a href="{{ url_for('materials_view', pid=it['id']) }}"
+             class="flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
+            <div class="flex-1 min-w-0">
+              <div class="font-medium truncate">
+                {{ it['title'] }}
+                {% if it['attach_count'] %}
+                  <span class="ml-1 text-xs text-slate-400">📎 {{ it['attach_count'] }}</span>
+                {% endif %}
+              </div>
+              <div class="text-xs text-slate-400 mt-0.5">
+                {{ it['author'] or '(삭제된 사용자)' }} · {{ it['created_at'][:10] }}
+              </div>
+            </div>
+            <span class="text-slate-300 text-sm">›</span>
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="border border-dashed border-slate-200 rounded-lg p-10 text-center text-sm text-slate-400">
+      등록된 자료가 없습니다.
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

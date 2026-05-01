@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}문제 검색{% endblock %}
+{% block title %}{% if tab == 'concept' %}개념 검색{% else %}문제 검색{% endif %}{% endblock %}
 
 {% set diff_color = {
   '1': 'bg-emerald-100 text-emerald-700',
@@ -11,11 +11,13 @@
 
 {% block content %}
 <section class="max-w-6xl mx-auto px-6 py-10 pb-28">
-  <div class="flex items-end justify-between mb-6">
+  <div class="flex items-end justify-between mb-4">
     <div>
-      <h1 class="text-2xl font-bold mb-1">문제 검색</h1>
+      <h1 class="text-2xl font-bold mb-1">
+        {% if tab == 'concept' %}개념 검색{% else %}문제 검색{% endif %}
+      </h1>
       <p class="text-sm text-slate-500">
-        조건에 맞는 문제를 골라 시험지를 만들 수 있습니다.
+        문제와 개념을 골라 시험지를 만들 수 있습니다. 두 탭의 선택은 자동으로 보존됩니다.
       </p>
     </div>
     <div class="text-sm text-slate-500">
@@ -23,19 +25,60 @@
     </div>
   </div>
 
+  <!-- 탭 -->
+  <div class="border-b border-slate-200 mb-6 flex gap-1">
+    <a href="{{ url_for('search', tab='problem') }}"
+       class="px-4 py-2 text-sm font-semibold border-b-2 -mb-px
+              {% if tab == 'problem' %}border-brand-600 text-brand-700{% else %}border-transparent text-slate-500 hover:text-slate-700{% endif %}">
+      문제
+    </a>
+    <a href="{{ url_for('search', tab='concept') }}"
+       class="px-4 py-2 text-sm font-semibold border-b-2 -mb-px
+              {% if tab == 'concept' %}border-cyan-600 text-cyan-700{% else %}border-transparent text-slate-500 hover:text-slate-700{% endif %}">
+      개념
+    </a>
+  </div>
+
   <!-- 필터 -->
-  <form method="get" class="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-8">
+  <form method="get" id="filter-form" class="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-6">
+    <input type="hidden" name="tab" value="{{ tab }}" />
     <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
-      <div>
-        <label class="block text-xs font-medium text-slate-600 mb-1">단원</label>
-        <select name="unit"
-                class="w-full px-3 py-2 border border-slate-300 rounded-md bg-white text-sm">
-          <option value="">전체</option>
-          {% for u in unit_options %}
-            <option value="{{ u.path }}" {% if filters.unit == u.path %}selected{% endif %}>{{ u.label }}</option>
-          {% endfor %}
-        </select>
+      <div class="md:col-span-2">
+        <label class="block text-xs font-medium text-slate-600 mb-1">
+          단원 <span class="text-slate-400">(여러 개 선택 가능 · 부모 단원 선택 시 하위 포함)</span>
+        </label>
+        <details class="relative" id="unit-dd">
+          <summary class="px-3 py-2 border border-slate-300 rounded-md bg-white text-sm cursor-pointer
+                          list-none [&::-webkit-details-marker]:hidden flex items-center justify-between">
+            <span id="unit-summary-label" class="text-slate-700 truncate">
+              {% if filters.units %}
+                {{ filters.units|length }}개 선택됨
+              {% else %}
+                전체
+              {% endif %}
+            </span>
+            <span class="text-xs text-slate-400 ml-2">▾</span>
+          </summary>
+          <div class="absolute z-30 mt-1 w-full max-h-72 overflow-y-auto
+                      bg-white border border-slate-200 rounded-md shadow-md p-2 space-y-0.5">
+            <div class="flex justify-between items-center px-1 pb-1 mb-1 border-b border-slate-100">
+              <button type="button" id="unit-clear"
+                      class="text-xs text-slate-500 hover:text-slate-700">전체 해제</button>
+              <span class="text-[11px] text-slate-400">체크 후 "필터 적용"</span>
+            </div>
+            {% for u in unit_options %}
+              <label class="flex items-center gap-2 px-2 py-1 text-sm hover:bg-slate-50 rounded cursor-pointer">
+                <input type="checkbox" name="unit" value="{{ u.path }}"
+                       {% if u.path in filters.units %}checked{% endif %}
+                       class="js-unit-cb accent-brand-600" />
+                <span style="padding-left: {{ u.depth * 12 }}px;">{{ u.label }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </details>
+        <div id="unit-chips" class="flex flex-wrap gap-1 mt-2"></div>
       </div>
+      {% if tab == 'problem' %}
       <div>
         <label class="block text-xs font-medium text-slate-600 mb-1">난이도</label>
         <select name="difficulty"
@@ -46,6 +89,7 @@
           {% endfor %}
         </select>
       </div>
+      {% endif %}
       <div>
         <label class="block text-xs font-medium text-slate-600 mb-1">출처</label>
         <input list="sources" name="source" value="{{ filters.source }}"
@@ -55,11 +99,18 @@
           {% for s in sources %}<option value="{{ s }}">{% endfor %}
         </datalist>
       </div>
-      <div>
-        <label class="block text-xs font-medium text-slate-600 mb-1">태그</label>
-        <input type="text" name="tag" value="{{ filters.tag }}"
-               placeholder="예: 등차수열"
+      <div {% if tab != 'problem' %}class="md:col-span-2"{% endif %}>
+        <label class="block text-xs font-medium text-slate-600 mb-1">
+          태그 <span class="text-slate-400">(쉼표로 구분 · 모두 포함)</span>
+        </label>
+        <input type="text" name="tag" id="tag-input" value="{{ filters.tag }}"
+               placeholder="예: 역학, 운동"
+               autocomplete="off"
                class="w-full px-3 py-2 border border-slate-300 rounded-md text-sm" />
+        <datalist id="tag-options">
+          {% for t in tag_options %}<option value="{{ t }}">{% endfor %}
+        </datalist>
+        <div id="tag-chips" class="flex flex-wrap gap-1 mt-2"></div>
       </div>
     </div>
     <div class="flex gap-2 mt-3">
@@ -67,12 +118,47 @@
               class="px-4 py-2 bg-brand-600 text-white text-sm rounded-md font-medium hover:bg-brand-700">
         필터 적용
       </button>
-      <a href="{{ url_for('search') }}"
+      <a href="{{ url_for('search', tab=tab) }}"
          class="px-4 py-2 bg-white border border-slate-300 text-sm rounded-md hover:bg-slate-100">
         초기화
       </a>
     </div>
   </form>
+
+  <!-- 자동 출제 (문제 탭에서만) -->
+  {% if tab == 'problem' and problems %}
+  <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+    <div class="flex flex-wrap items-end gap-3">
+      <div class="text-sm font-semibold mr-2 self-center">자동 출제</div>
+      {% for d in difficulties %}
+        {% set cnt = problems|selectattr('difficulty','equalto',d)|list|length %}
+        <div>
+          <label class="block text-[11px] text-slate-500 mb-1">
+            난이도 {{ d }}
+            <span class="text-slate-400">(최대 {{ cnt }})</span>
+          </label>
+          <input type="number" min="0" max="{{ cnt }}" value="0"
+                 data-auto-diff="{{ d }}" data-max="{{ cnt }}"
+                 class="w-24 px-2 py-1.5 border border-slate-300 rounded text-sm" />
+        </div>
+      {% endfor %}
+      <div class="ml-auto flex gap-2">
+        <button type="button" id="btn-auto-pick"
+                class="px-3 py-2 bg-slate-800 text-white text-sm rounded-md hover:bg-slate-900">
+          난이도별 랜덤 선택
+        </button>
+        <button type="button" id="btn-auto-clear"
+                class="px-3 py-2 bg-white border border-slate-300 text-sm rounded-md hover:bg-slate-50">
+          초기화
+        </button>
+      </div>
+    </div>
+    <div class="mt-2 text-xs text-slate-500">
+      위에서 단원·출처·태그로 먼저 필터링하면, 그 결과 안에서 난이도별로 입력한 개수만큼 무작위로 선택됩니다.
+      선택 순서대로 시험지 문항번호가 매겨집니다.
+    </div>
+  </div>
+  {% endif %}
 
   <!-- 결과 -->
   <form id="exam-form" method="get" action="{{ url_for('exam') }}">
@@ -80,24 +166,33 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {% for p in problems %}
           <div class="group relative border border-slate-200 rounded-lg overflow-hidden
-                      hover:border-brand-500 hover:shadow-md transition
-                      has-[:checked]:border-brand-600 has-[:checked]:ring-2
-                      has-[:checked]:ring-brand-500/40">
+                      hover:{% if tab == 'concept' %}border-cyan-500{% else %}border-brand-500{% endif %} hover:shadow-md transition
+                      has-[:checked]:{% if tab == 'concept' %}border-cyan-600 has-[:checked]:ring-cyan-500/40{% else %}border-brand-600 has-[:checked]:ring-brand-500/40{% endif %}
+                      has-[:checked]:ring-2">
             <label class="block cursor-pointer">
               <div class="relative aspect-video bg-slate-50 flex items-center justify-center">
-                <img src="{{ url_for('uploaded_file', filename=p['problem_image']) }}"
+                <img src="{{ url_for('uploaded_file', filename=p['image'] if tab == 'concept' else p['problem_image']) }}"
                      alt="{{ p['title'] }}"
                      class="max-h-full max-w-full object-contain" />
-                <input type="checkbox" name="ids" value="{{ p['id'] }}"
-                       class="absolute top-2 left-2 w-5 h-5 accent-brand-600 cursor-pointer js-pick" />
+                <input type="checkbox" value="{{ p['id'] }}"
+                       {% if tab == 'problem' %}data-diff="{{ p['difficulty'] }}"{% endif %}
+                       class="absolute top-2 left-2 w-5 h-5 cursor-pointer js-pick
+                              {% if tab == 'concept' %}accent-cyan-600{% else %}accent-brand-600{% endif %}" />
+                <span class="order-badge hidden absolute top-2 left-9 px-2 py-0.5
+                             text-[12px] font-bold rounded text-white
+                             {% if tab == 'concept' %}bg-cyan-600{% else %}bg-brand-600{% endif %}"></span>
               </div>
               <div class="p-3">
                 <div class="flex items-start justify-between gap-2">
                   <h3 class="font-semibold text-sm line-clamp-2">{{ p['title'] }}</h3>
-                  <span class="shrink-0 text-[11px] px-1.5 py-0.5 rounded
-                               {{ diff_color.get(p['difficulty']|string, 'bg-slate-100 text-slate-600') }}">
-                    Lv.{{ p['difficulty'] }}
-                  </span>
+                  {% if tab == 'problem' %}
+                    <span class="shrink-0 text-[11px] px-1.5 py-0.5 rounded
+                                 {{ diff_color.get(p['difficulty']|string, 'bg-slate-100 text-slate-600') }}">
+                      Lv.{{ p['difficulty'] }}
+                    </span>
+                  {% else %}
+                    <span class="shrink-0 text-[11px] px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-700">개념</span>
+                  {% endif %}
                 </div>
                 <div class="mt-1 text-xs text-slate-500 flex flex-wrap gap-1">
                   <span class="px-1.5 py-0.5 bg-slate-100 rounded">{{ p['unit'] }}</span>
@@ -110,33 +205,59 @@
                 {% endif %}
               </div>
             </label>
+            {% if tab == 'problem' %}
             <a href="{{ url_for('edit_problem', pid=p['id']) }}"
                class="absolute top-2 right-2 px-2 py-1 text-[11px] rounded
                       bg-white/90 border border-slate-200 text-slate-600
                       opacity-0 group-hover:opacity-100 hover:bg-white hover:text-brand-700 transition">
               수정
             </a>
+            {% elif current_user.is_admin %}
+            <form method="post" action="{{ url_for('delete_concept', cid=p['id']) }}"
+                  onsubmit="return confirm('이 개념을 삭제하시겠습니까?');"
+                  class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition">
+              <button type="submit"
+                      class="px-2 py-1 text-[11px] rounded bg-white/90 border border-red-200 text-red-600 hover:bg-red-50">
+                삭제
+              </button>
+            </form>
+            {% endif %}
           </div>
         {% endfor %}
       </div>
     {% else %}
       <div class="text-center py-20 text-slate-400 border border-dashed border-slate-200 rounded-lg">
-        조건에 해당하는 문제가 없습니다.
-        <div class="mt-2"><a href="{{ url_for('upload') }}" class="text-brand-600 hover:underline">→ 새 문제 등록</a></div>
+        조건에 해당하는 {% if tab == 'concept' %}개념{% else %}문제{% endif %}가 없습니다.
+        <div class="mt-2">
+          <a href="{{ url_for('upload_batch') }}" class="text-brand-600 hover:underline">
+            → PDF 일괄 등록
+          </a>
+        </div>
       </div>
     {% endif %}
 
     <!-- Sticky 액션 바 -->
     <div class="fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 shadow-lg">
-      <div class="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
-        <div class="text-sm">
-          <span class="font-semibold text-brand-700"><span id="pick-count">0</span></span>
-          <span class="text-slate-600">개 선택됨</span>
+      <div class="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between flex-wrap gap-2">
+        <div class="text-sm flex items-center gap-3">
+          <span>
+            <span class="font-semibold text-brand-700"><span id="problem-count">0</span></span>
+            <span class="text-slate-600">문제</span>
+          </span>
+          <span class="text-slate-300">|</span>
+          <span>
+            <span class="font-semibold text-cyan-700"><span id="concept-count">0</span></span>
+            <span class="text-slate-600">개념</span>
+          </span>
         </div>
         <div class="flex gap-2">
-          <button type="button" id="clear-pick"
-                  class="px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-md hover:bg-slate-200">
-            선택 해제
+          <button type="button" id="clear-pick-tab"
+                  class="px-3 py-2 bg-white border border-slate-300 text-slate-700 text-sm rounded-md hover:bg-slate-100">
+            이 탭 선택 해제
+          </button>
+          <button type="button" id="clear-pick-all"
+                  class="px-3 py-2 bg-slate-100 text-slate-700 text-sm rounded-md hover:bg-slate-200">
+            전체 선택 해제
           </button>
           <button type="submit" id="make-exam" disabled
                   class="px-5 py-2 bg-brand-600 text-white text-sm font-medium rounded-md
@@ -152,20 +273,199 @@
 
 {% block scripts %}
 <script>
-  const picks = document.querySelectorAll('.js-pick');
-  const countEl = document.getElementById('pick-count');
-  const btn = document.getElementById('make-exam');
+  const TAB = {{ tab|tojson }};
+  const STORE_KEYS = {
+    problem: 'scienceplat:order:problem',
+    concept: 'scienceplat:order:concept',
+  };
+
+  function load(tab) {
+    try { return JSON.parse(sessionStorage.getItem(STORE_KEYS[tab])) || []; }
+    catch { return []; }
+  }
+  function save(tab, arr) {
+    sessionStorage.setItem(STORE_KEYS[tab], JSON.stringify(arr));
+  }
+
+  let order = load(TAB);                 // 현재 탭의 클릭순 IDs
+  let otherOrder = load(TAB === 'problem' ? 'concept' : 'problem'); // 반대 탭의 IDs (read-only)
+
+  const picks   = document.querySelectorAll('.js-pick');
+  const form    = document.getElementById('exam-form');
+  const btn     = document.getElementById('make-exam');
+  const pCount  = document.getElementById('problem-count');
+  const cCount  = document.getElementById('concept-count');
 
   function refresh() {
-    const n = document.querySelectorAll('.js-pick:checked').length;
-    countEl.textContent = n;
-    btn.disabled = n === 0;
+    // 카운트 표시
+    if (TAB === 'problem') {
+      pCount.textContent = order.length;
+      cCount.textContent = otherOrder.length;
+    } else {
+      pCount.textContent = otherOrder.length;
+      cCount.textContent = order.length;
+    }
+    btn.disabled = (order.length + otherOrder.length) === 0;
+
+    // 현재 탭 항목들의 체크/뱃지 동기화
+    document.querySelectorAll('.order-badge').forEach(b => {
+      b.classList.add('hidden');
+      b.textContent = '';
+    });
+    picks.forEach(cb => { cb.checked = order.includes(cb.value); });
+    order.forEach((id, i) => {
+      const cb = document.querySelector(`.js-pick[value="${id}"]`);
+      if (!cb) return;
+      const badge = cb.parentElement.querySelector('.order-badge');
+      if (badge) {
+        badge.textContent = i + 1;
+        badge.classList.remove('hidden');
+      }
+    });
   }
-  picks.forEach(p => p.addEventListener('change', refresh));
-  document.getElementById('clear-pick').addEventListener('click', () => {
-    picks.forEach(p => { p.checked = false; });
+
+  picks.forEach(cb => {
+    cb.addEventListener('change', () => {
+      const id = cb.value;
+      if (cb.checked) {
+        if (!order.includes(id)) order.push(id);
+      } else {
+        order = order.filter(x => x !== id);
+      }
+      save(TAB, order);
+      refresh();
+    });
+  });
+
+  document.getElementById('clear-pick-tab').addEventListener('click', () => {
+    order = [];
+    save(TAB, order);
     refresh();
   });
+  document.getElementById('clear-pick-all').addEventListener('click', () => {
+    order = []; otherOrder = [];
+    save('problem', []); save('concept', []);
+    refresh();
+  });
+
+  // 현재 탭 + 반대 탭 모두를 한 URL 로 조립
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const probs    = TAB === 'problem' ? order : otherOrder;
+    const concepts = TAB === 'concept' ? order : otherOrder;
+    if (probs.length + concepts.length === 0) return;
+    const params = new URLSearchParams();
+    probs.forEach(id    => params.append('ids', id));
+    concepts.forEach(id => params.append('concept_ids', id));
+    window.location.href = form.action + '?' + params.toString();
+  });
+
+  // ---------- 자동 출제 (문제 탭에서만) ----------
+  const autoPickBtn  = document.getElementById('btn-auto-pick');
+  const autoClearBtn = document.getElementById('btn-auto-clear');
+  if (autoPickBtn) {
+    function shuffle(arr) {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+    autoPickBtn.addEventListener('click', () => {
+      // 문제 탭 선택만 리셋
+      order = [];
+      document.querySelectorAll('[data-auto-diff]').forEach(input => {
+        const d = input.dataset.autoDiff;
+        let n = parseInt(input.value) || 0;
+        const max = parseInt(input.dataset.max) || 0;
+        if (n <= 0) return;
+        if (n > max) n = max;
+        const candidates = [...document.querySelectorAll(`.js-pick[data-diff="${d}"]`)];
+        shuffle(candidates).slice(0, n).forEach(cb => {
+          order.push(cb.value);
+        });
+      });
+      save(TAB, order);
+      refresh();
+      if (order.length === 0) {
+        alert('난이도별 개수를 1개 이상 입력하세요.');
+      }
+    });
+    autoClearBtn.addEventListener('click', () => {
+      document.querySelectorAll('[data-auto-diff]').forEach(i => { i.value = 0; });
+    });
+  }
+
   refresh();
+
+  // ---------- 필터 칩 (단원·태그) ----------
+  (function() {
+    const unitDD    = document.getElementById('unit-dd');
+    if (!unitDD) return;
+    const unitCbs   = document.querySelectorAll('.js-unit-cb');
+    const unitChips = document.getElementById('unit-chips');
+    const unitLabel = document.getElementById('unit-summary-label');
+    const unitClear = document.getElementById('unit-clear');
+
+    function renderUnitChips() {
+      const checked = [...unitCbs].filter(cb => cb.checked);
+      unitLabel.textContent = checked.length === 0
+        ? '전체' : checked.length + '개 선택됨';
+      unitChips.innerHTML = '';
+      checked.forEach(cb => {
+        const chip = document.createElement('span');
+        chip.className = 'inline-flex items-center gap-1 pl-2 pr-1 py-0.5 text-xs '
+          + 'rounded-full bg-brand-50 text-brand-700 border border-brand-200';
+        const labelText = cb.parentElement.querySelector('span').textContent.trim();
+        const lbl = document.createElement('span');
+        lbl.textContent = labelText;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'w-4 h-4 inline-flex items-center justify-center text-brand-500 hover:text-brand-800';
+        btn.setAttribute('aria-label', '제거');
+        btn.textContent = '×';
+        btn.addEventListener('click', () => { cb.checked = false; renderUnitChips(); });
+        chip.appendChild(lbl);
+        chip.appendChild(btn);
+        unitChips.appendChild(chip);
+      });
+    }
+    unitCbs.forEach(cb => cb.addEventListener('change', renderUnitChips));
+    unitClear.addEventListener('click', () => {
+      unitCbs.forEach(cb => cb.checked = false);
+      renderUnitChips();
+    });
+    renderUnitChips();
+
+    const tagInput = document.getElementById('tag-input');
+    const tagChips = document.getElementById('tag-chips');
+    function renderTagChips() {
+      tagChips.innerHTML = '';
+      const tags = tagInput.value.split(',').map(s => s.trim()).filter(Boolean);
+      tags.forEach((t, i) => {
+        const chip = document.createElement('span');
+        chip.className = 'inline-flex items-center gap-1 pl-2 pr-1 py-0.5 text-xs '
+          + 'rounded-full bg-slate-100 text-slate-700 border border-slate-200';
+        const lbl = document.createElement('span');
+        lbl.textContent = '#' + t;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'w-4 h-4 inline-flex items-center justify-center text-slate-400 hover:text-slate-700';
+        btn.setAttribute('aria-label', '제거');
+        btn.textContent = '×';
+        btn.addEventListener('click', () => {
+          const arr = tagInput.value.split(',').map(s => s.trim()).filter(Boolean);
+          arr.splice(i, 1);
+          tagInput.value = arr.join(', ');
+          renderTagChips();
+        });
+        chip.appendChild(lbl);
+        chip.appendChild(btn);
+        tagChips.appendChild(chip);
+      });
+    }
+    tagInput.addEventListener('input', renderTagChips);
+    renderTagChips();
+  })();
 </script>
 {% endblock %}

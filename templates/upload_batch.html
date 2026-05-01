@@ -1,0 +1,851 @@
+{% extends "base.html" %}
+{% block title %}PDF 일괄 등록{% endblock %}
+
+{% block head %}
+<style>
+  .page-wrap {
+    position: relative;
+    display: block;
+    user-select: none;
+    cursor: crosshair;
+  }
+  .page-wrap img {
+    display: block;
+    width: 100%;
+    height: auto;
+    -webkit-user-drag: none;
+    user-drag: none;
+  }
+  /* 문제(빨강) / 해설(에메랄드) 색 구분 */
+  .crop-rect {
+    position: absolute;
+    border: 2px solid #dc2626;
+    background: rgba(220, 38, 38, .12);
+    cursor: move;
+    box-sizing: border-box;
+  }
+  .crop-rect.kind-solution {
+    border-color: #059669;
+    background: rgba(5, 150, 105, .12);
+  }
+  .crop-rect.selected {
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, .18);
+    z-index: 5;
+  }
+  .crop-rect .label {
+    position: absolute;
+    top: -22px; left: -2px;
+    background: #dc2626; color: white;
+    font-size: 11px; font-weight: 600;
+    padding: 1px 6px; border-radius: 3px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .crop-rect.kind-solution .label { background: #059669; }
+  .crop-rect.selected .label { background: #f59e0b; }
+  .crop-rect .handle {
+    position: absolute;
+    width: 12px; height: 12px;
+    background: white;
+    border: 2px solid #dc2626;
+    bottom: -7px; right: -7px;
+    cursor: nwse-resize;
+    border-radius: 2px;
+  }
+  .crop-rect.kind-solution .handle { border-color: #059669; }
+  .crop-rect.selected .handle { border-color: #f59e0b; }
+  .drawing-rect {
+    position: absolute;
+    border: 2px dashed #dc2626;
+    background: rgba(220, 38, 38, .08);
+    pointer-events: none;
+    box-sizing: border-box;
+  }
+  .drawing-rect.solution {
+    border-color: #059669;
+    background: rgba(5, 150, 105, .08);
+  }
+  kbd {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px;
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  /* 모드 토글 */
+  .mode-btn {
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    background: white;
+    color: #64748b;
+    cursor: pointer;
+  }
+  .mode-btn.active.problem { background: #dc2626; color: white; }
+  .mode-btn.active.solution { background: #059669; color: white; }
+  .mode-btn.active.concept { background: #0891b2; color: white; }
+  /* concept(시안) 영역 색 */
+  .crop-rect.kind-concept {
+    border-color: #0891b2;
+    background: rgba(8, 145, 178, .12);
+  }
+  .crop-rect.kind-concept .label { background: #0891b2; }
+  .crop-rect.kind-concept .handle { border-color: #0891b2; }
+  .drawing-rect.concept {
+    border-color: #0891b2;
+    background: rgba(8, 145, 178, .08);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="max-w-7xl mx-auto px-6 py-8">
+  <h1 class="text-2xl font-bold mb-1">PDF 일괄 등록</h1>
+  <p class="text-sm text-slate-500 mb-6">
+    문제 PDF (필수) 와 해설 PDF (선택) 를 업로드하고, 페이지에서 영역을 드래그로 지정하세요.
+    각 문제 영역에 해설 영역을 연결할 수 있습니다.
+  </p>
+
+  <!-- Phase 1: 업로드 -->
+  <div id="phase-upload"
+       class="border-2 border-dashed border-slate-300 rounded-lg p-8 bg-slate-50">
+    <div class="mb-4 flex items-center gap-3 justify-center">
+      <span class="text-sm font-semibold text-slate-700">등록 종류:</span>
+      <div class="inline-flex rounded-md border border-slate-300 overflow-hidden bg-white">
+        <button type="button" id="entity-problem" class="mode-btn problem active">문제</button>
+        <button type="button" id="entity-concept" class="mode-btn concept">개념</button>
+      </div>
+      <span class="text-xs text-slate-500" id="entity-hint">
+        문제는 해설 PDF와 함께 등록할 수 있고, 난이도/정답을 입력합니다.
+      </span>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+      <div class="border border-slate-200 rounded-lg p-4 bg-white">
+        <div class="text-sm font-semibold mb-2">
+          <span id="main-pdf-label">문제 PDF</span> <span class="text-red-500">*</span>
+        </div>
+        <input type="file" id="pdf-file" accept="application/pdf"
+               class="block w-full text-sm" />
+        <div id="pdf-name" class="mt-2 text-xs text-slate-500"></div>
+      </div>
+      <div class="border border-slate-200 rounded-lg p-4 bg-white" id="sol-pdf-card">
+        <div class="text-sm font-semibold mb-2">
+          해설 PDF <span class="text-xs font-normal text-slate-400">(선택)</span>
+        </div>
+        <input type="file" id="sol-file" accept="application/pdf"
+               class="block w-full text-sm" />
+        <div id="sol-name" class="mt-2 text-xs text-slate-500"></div>
+      </div>
+    </div>
+    <div class="text-center">
+      <button id="btn-upload" type="button" disabled
+              class="px-6 py-3 bg-brand-600 text-white rounded-md font-medium
+                     hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">
+        업로드 및 미리보기
+      </button>
+      <div id="upload-status" class="mt-3 text-sm text-slate-500"></div>
+    </div>
+  </div>
+
+  <!-- Phase 2: 영역 지정 -->
+  <div id="phase-crop" class="hidden">
+
+    <!-- 모드 + 공통 기본값 -->
+    <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-6 sticky top-0 z-30">
+      <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-semibold text-slate-700">그리는 모드:</span>
+          <div class="inline-flex rounded-md border border-slate-300 overflow-hidden" id="draw-mode-group">
+            <button type="button" id="mode-problem" class="mode-btn problem active">문제 영역</button>
+            <button type="button" id="mode-solution" class="mode-btn solution">해설 영역</button>
+            <button type="button" id="mode-concept" class="mode-btn concept hidden">개념 영역</button>
+          </div>
+          <span class="ml-2 text-xs text-slate-500" id="mode-color-hint">
+            색: <span class="text-brand-700 font-semibold">빨강</span>=문제, <span class="text-emerald-700 font-semibold">초록</span>=해설
+          </span>
+        </div>
+      </div>
+      <div class="text-xs font-semibold text-slate-700 mb-2">공통 기본값
+        <span class="font-normal text-slate-500">(새 영역에 자동 적용 · 개별 변경 가능)</span>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">단원</label>
+          <select id="default-unit" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
+            <option value="">선택</option>
+            {% for u in unit_options %}<option value="{{ u.path }}">{{ u.label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div id="default-difficulty-wrap">
+          <label class="block text-xs text-slate-600 mb-1">난이도</label>
+          <select id="default-difficulty" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
+            <option value="">선택</option>
+            {% for d in difficulties %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">출처</label>
+          <input type="text" id="default-source" placeholder='예: "2024 수능"'
+                 class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm" />
+        </div>
+        <div>
+          <label class="block text-xs text-slate-600 mb-1">태그</label>
+          <input type="text" id="default-tags" placeholder="쉼표 구분"
+                 class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm" />
+        </div>
+      </div>
+      <div class="mt-2 flex items-center justify-between flex-wrap gap-2">
+        <div class="text-xs text-slate-500">
+          조작: 드래그로 영역 · 클릭으로 선택 · 모서리 핸들로 크기 · 선택 후 <kbd>Del</kbd> 삭제
+        </div>
+        <button type="button" id="btn-apply-defaults"
+                class="text-xs px-3 py-1.5 rounded border border-slate-300 bg-white
+                       text-slate-700 hover:bg-slate-100">
+          현재 기본값을 모든 영역에 적용
+        </button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+      <!-- 페이지 -->
+      <div id="pages-container" class="lg:col-span-3 space-y-6"></div>
+
+      <!-- 사이드 리스트 -->
+      <div class="lg:col-span-2">
+        <div class="lg:sticky lg:top-72 space-y-4">
+          <div class="flex items-center justify-between">
+            <div class="text-sm font-semibold" id="side-summary"></div>
+            <button id="btn-commit" type="button"
+                    class="px-4 py-2 bg-brand-600 text-white text-sm rounded-md
+                           hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled>일괄 등록</button>
+          </div>
+          <div class="max-h-[78vh] overflow-y-auto pr-1 space-y-4">
+            <div id="problems-section">
+              <div class="text-xs font-semibold text-brand-700 mb-2">문제 영역</div>
+              <div id="problems-list" class="space-y-3"></div>
+            </div>
+            <div id="solutions-section">
+              <div class="text-xs font-semibold text-emerald-700 mb-2">해설 영역</div>
+              <div id="solutions-list" class="space-y-2"></div>
+            </div>
+            <div id="concepts-section" class="hidden">
+              <div class="text-xs font-semibold text-cyan-700 mb-2">개념 영역</div>
+              <div id="concepts-list" class="space-y-3"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const UNIT_OPTIONS = {{ unit_options|tojson }};
+const DIFFICULTIES = {{ difficulties|tojson }};
+const COMMIT_URL  = "{{ url_for('upload_batch_commit') }}";
+const PDF_URL     = "{{ url_for('upload_batch_pdf') }}";
+
+let SESSION_ID = null;
+let PAGES = [];          // [{kind:'main'|'solution', index, url, ...}]
+let CROPS = [];          // {temp_id, kind:'problem'|'solution'|'concept', pdf, page, x,y,w,h, ...}
+let SELECTED = null;
+let CROP_SEQ = 0;
+let PDF_NAME = "";
+let MODE = "problem";    // drawing mode: 'problem' | 'solution' | 'concept'
+let ENTITY = "problem";  // 'problem' | 'concept'
+
+const $ = (id) => document.getElementById(id);
+
+// ---------- Entity 토글 (Phase 1) ----------
+function setEntity(e) {
+  ENTITY = e;
+  $("entity-problem").classList.toggle("active", e === "problem");
+  $("entity-concept").classList.toggle("active", e === "concept");
+  $("main-pdf-label").textContent = e === "concept" ? "개념 PDF" : "문제 PDF";
+  $("sol-pdf-card").classList.toggle("hidden", e === "concept");
+  $("entity-hint").textContent = e === "concept"
+    ? "개념은 해설 PDF가 필요 없습니다. 각 영역에 제목/단원/태그만 입력합니다."
+    : "문제는 해설 PDF와 함께 등록할 수 있고, 난이도/정답을 입력합니다.";
+  // drawing mode 기본값
+  MODE = e === "concept" ? "concept" : "problem";
+}
+$("entity-problem").addEventListener("click", () => setEntity("problem"));
+$("entity-concept").addEventListener("click", () => setEntity("concept"));
+
+// ---------- Phase 1 ----------
+function refreshUploadButton() {
+  $("btn-upload").disabled = !($("pdf-file").files[0]);
+}
+$("pdf-file").addEventListener("change", () => {
+  const f = $("pdf-file").files[0];
+  $("pdf-name").textContent = f ? f.name : "";
+  refreshUploadButton();
+});
+$("sol-file").addEventListener("change", () => {
+  const f = $("sol-file").files[0];
+  $("sol-name").textContent = f ? f.name : "";
+});
+
+$("btn-upload").addEventListener("click", async () => {
+  const main = $("pdf-file").files[0];
+  const sol  = $("sol-file").files[0];
+  if (!main) return;
+  $("btn-upload").disabled = true;
+  $("upload-status").textContent = "업로드 및 변환 중...";
+
+  const fd = new FormData();
+  fd.append("pdf", main);
+  if (sol) fd.append("solution_pdf", sol);
+
+  let res, json;
+  try {
+    res = await fetch(PDF_URL, { method: "POST", body: fd });
+    json = await res.json();
+  } catch (err) {
+    $("upload-status").textContent = "업로드 실패: " + err.message;
+    $("btn-upload").disabled = false;
+    return;
+  }
+  if (!res.ok) {
+    $("upload-status").textContent = json.error || "업로드 실패";
+    $("btn-upload").disabled = false;
+    return;
+  }
+
+  SESSION_ID = json.session_id;
+  PAGES = json.pages;
+  PDF_NAME = (json.filename || "").replace(/\.pdf$/i, "");
+  $("phase-upload").classList.add("hidden");
+  $("phase-crop").classList.remove("hidden");
+
+  // entity 에 따라 모드 토글/리스트 섹션 표시 조정
+  if (ENTITY === "concept") {
+    $("mode-problem").classList.add("hidden");
+    $("mode-solution").classList.add("hidden");
+    $("mode-concept").classList.remove("hidden");
+    $("mode-concept").classList.add("active");
+    $("mode-color-hint").innerHTML = '색: <span class="text-cyan-700 font-semibold">시안</span>=개념';
+    $("default-difficulty-wrap").classList.add("hidden");
+    $("problems-section").classList.add("hidden");
+    $("solutions-section").classList.add("hidden");
+    $("concepts-section").classList.remove("hidden");
+    MODE = "concept";
+  } else {
+    $("problems-section").classList.remove("hidden");
+    $("solutions-section").classList.remove("hidden");
+    $("concepts-section").classList.add("hidden");
+  }
+
+  renderPages();
+  renderLists();
+});
+
+// ---------- 모드 토글 (Phase 2) ----------
+function setMode(m) {
+  MODE = m;
+  $("mode-problem").classList.toggle("active", m === "problem");
+  $("mode-solution").classList.toggle("active", m === "solution");
+  $("mode-concept").classList.toggle("active", m === "concept");
+}
+$("mode-problem").addEventListener("click", () => setMode("problem"));
+$("mode-solution").addEventListener("click", () => setMode("solution"));
+$("mode-concept").addEventListener("click", () => setMode("concept"));
+
+// ---------- 페이지 렌더 ----------
+function renderPages() {
+  const container = $("pages-container");
+  container.innerHTML = "";
+
+  const groups = {
+    main: PAGES.filter(p => p.kind === "main"),
+    solution: PAGES.filter(p => p.kind === "solution"),
+  };
+
+  function renderGroup(label, list, kindLabel) {
+    if (!list.length) return;
+    const heading = document.createElement("div");
+    heading.className = "text-sm font-bold text-slate-700 sticky top-64 z-10 bg-white py-2 border-b border-slate-200";
+    heading.textContent = label;
+    container.appendChild(heading);
+    list.forEach((p, idx) => {
+      const card = document.createElement("div");
+      card.className = "border border-slate-200 rounded-lg p-3 bg-white shadow-sm";
+      card.innerHTML = `
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold text-slate-700">${kindLabel} 페이지 ${p.index+1}</div>
+          <button type="button" data-act="full"
+                  class="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">
+            전체 페이지를 1영역으로
+          </button>
+        </div>
+        <div class="page-wrap" data-pdf="${p.kind}" data-page="${p.index}">
+          <img src="${p.url}" alt="${kindLabel} ${p.index+1}" />
+        </div>
+      `;
+      container.appendChild(card);
+      card.querySelector('[data-act="full"]')
+          .addEventListener("click", () => addCrop(p.kind, p.index, 0, 0, 1, 1));
+      bindPageMouseDown(card.querySelector(".page-wrap"));
+    });
+  }
+  renderGroup("문제 PDF", groups.main, "문제");
+  renderGroup("해설 PDF", groups.solution, "해설");
+}
+
+// ---------- 드래그 인터랙션 ----------
+let DRAG = null;
+
+function bindPageMouseDown(pageEl) {
+  pageEl.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const rectEl = e.target.closest(".crop-rect");
+    const rect = pageEl.getBoundingClientRect();
+    if (rectEl) {
+      const id = parseInt(rectEl.dataset.cropId);
+      selectCrop(id);
+      const c = CROPS.find(x => x.temp_id === id);
+      if (e.target.classList.contains("handle")) {
+        DRAG = { mode: "resize", pageEl, rect, id,
+                 sx: e.clientX, sy: e.clientY, w0: c.w, h0: c.h };
+      } else {
+        DRAG = { mode: "move", pageEl, rect, id,
+                 sx: e.clientX, sy: e.clientY, x0: c.x, y0: c.y };
+      }
+      e.preventDefault();
+      return;
+    }
+    const sx = (e.clientX - rect.left) / rect.width;
+    const sy = (e.clientY - rect.top) / rect.height;
+    const draft = document.createElement("div");
+    draft.className = "drawing-rect"
+      + (MODE === "solution" ? " solution" : "")
+      + (MODE === "concept" ? " concept" : "");
+    draft.style.left = (sx * 100) + "%";
+    draft.style.top = (sy * 100) + "%";
+    pageEl.appendChild(draft);
+    DRAG = { mode: "create", pageEl, rect,
+             pdf: pageEl.dataset.pdf, page: parseInt(pageEl.dataset.page),
+             sx, sy, draft };
+    e.preventDefault();
+  });
+}
+
+document.addEventListener("mousemove", (e) => {
+  if (!DRAG) return;
+  if (DRAG.mode === "create") {
+    const cx = clamp((e.clientX - DRAG.rect.left) / DRAG.rect.width, 0, 1);
+    const cy = clamp((e.clientY - DRAG.rect.top) / DRAG.rect.height, 0, 1);
+    const x = Math.min(DRAG.sx, cx);
+    const y = Math.min(DRAG.sy, cy);
+    Object.assign(DRAG.draft.style, {
+      left: (x * 100) + "%", top: (y * 100) + "%",
+      width: (Math.abs(cx - DRAG.sx) * 100) + "%",
+      height: (Math.abs(cy - DRAG.sy) * 100) + "%",
+    });
+  } else if (DRAG.mode === "move") {
+    const dx = (e.clientX - DRAG.sx) / DRAG.rect.width;
+    const dy = (e.clientY - DRAG.sy) / DRAG.rect.height;
+    const c = CROPS.find(x => x.temp_id === DRAG.id);
+    c.x = clamp(DRAG.x0 + dx, 0, 1 - c.w);
+    c.y = clamp(DRAG.y0 + dy, 0, 1 - c.h);
+    updateRectEl(c);
+  } else if (DRAG.mode === "resize") {
+    const dx = (e.clientX - DRAG.sx) / DRAG.rect.width;
+    const dy = (e.clientY - DRAG.sy) / DRAG.rect.height;
+    const c = CROPS.find(x => x.temp_id === DRAG.id);
+    c.w = clamp(DRAG.w0 + dx, 0.02, 1 - c.x);
+    c.h = clamp(DRAG.h0 + dy, 0.02, 1 - c.y);
+    updateRectEl(c);
+  }
+});
+
+document.addEventListener("mouseup", () => {
+  if (!DRAG) return;
+  if (DRAG.mode === "create") {
+    const w = parseFloat(DRAG.draft.style.width || "0") / 100;
+    const h = parseFloat(DRAG.draft.style.height || "0") / 100;
+    const x = parseFloat(DRAG.draft.style.left) / 100;
+    const y = parseFloat(DRAG.draft.style.top) / 100;
+    DRAG.draft.remove();
+    if (w > 0.02 && h > 0.02) addCrop(DRAG.pdf, DRAG.page, x, y, w, h);
+  }
+  DRAG = null;
+});
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// ---------- CRUD ----------
+function addCrop(pdf, page, x, y, w, h) {
+  CROP_SEQ++;
+  const c = {
+    temp_id: CROP_SEQ,
+    kind: MODE,                 // 'problem' | 'solution' | 'concept'
+    pdf, page, x, y, w, h,
+  };
+  if (MODE === "problem") {
+    c.title = `${PDF_NAME || "PDF"} - p.${page+1} #${problemCount()+1}`;
+    c.unit = $("default-unit").value;
+    c.difficulty = $("default-difficulty").value;
+    c.source = $("default-source").value;
+    c.tags = $("default-tags").value;
+    c.answer = "";
+    c.solution_temp_id = null;
+  } else if (MODE === "concept") {
+    c.title = `${PDF_NAME || "PDF"} - p.${page+1} #${conceptCount()+1}`;
+    c.unit = $("default-unit").value;
+    c.source = $("default-source").value;
+    c.tags = $("default-tags").value;
+  }
+  CROPS.push(c);
+  renderCropRect(c);
+  renderLists();
+  selectCrop(c.temp_id);
+}
+
+function problemCount()  { return CROPS.filter(c => c.kind === "problem").length; }
+function solutionCount() { return CROPS.filter(c => c.kind === "solution").length; }
+function conceptCount()  { return CROPS.filter(c => c.kind === "concept").length; }
+
+function renderCropRect(c) {
+  const pageEl = document.querySelector(
+    `.page-wrap[data-pdf="${c.pdf}"][data-page="${c.page}"]`);
+  if (!pageEl) return;
+  const el = document.createElement("div");
+  el.className = "crop-rect"
+    + (c.kind === "solution" ? " kind-solution" : "")
+    + (c.kind === "concept"  ? " kind-concept"  : "");
+  el.dataset.cropId = c.temp_id;
+  el.innerHTML = `<span class="label"></span><span class="handle"></span>`;
+  pageEl.appendChild(el);
+  updateRectEl(c);
+  updateRectLabel(c);
+}
+
+function updateRectEl(c) {
+  const el = document.querySelector(
+    `.page-wrap[data-pdf="${c.pdf}"][data-page="${c.page}"] .crop-rect[data-crop-id="${c.temp_id}"]`);
+  if (!el) return;
+  el.style.left   = (c.x * 100) + "%";
+  el.style.top    = (c.y * 100) + "%";
+  el.style.width  = (c.w * 100) + "%";
+  el.style.height = (c.h * 100) + "%";
+}
+
+function updateRectLabel(c) {
+  const el = document.querySelector(
+    `.page-wrap[data-pdf="${c.pdf}"][data-page="${c.page}"] .crop-rect[data-crop-id="${c.temp_id}"] .label`);
+  if (!el) return;
+  const same = CROPS.filter(x => x.kind === c.kind);
+  const n = same.findIndex(x => x.temp_id === c.temp_id) + 1;
+  el.textContent =
+    c.kind === "problem"  ? `문제 #${n}` :
+    c.kind === "solution" ? `해설 #${n}` : `개념 #${n}`;
+}
+
+function refreshAllLabels() {
+  CROPS.forEach(updateRectLabel);
+}
+
+function selectCrop(id) {
+  SELECTED = id;
+  document.querySelectorAll(".crop-rect").forEach(el => {
+    el.classList.toggle("selected", parseInt(el.dataset.cropId) === id);
+  });
+  document.querySelectorAll("[data-crop-card]").forEach(el => {
+    const sel = parseInt(el.dataset.cropCard) === id;
+    el.classList.toggle("ring-2", sel);
+    el.classList.toggle("ring-amber-400", sel);
+  });
+  const card = document.querySelector(`[data-crop-card="${id}"]`);
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function deleteCrop(id) {
+  // 문제 삭제 시 그 문제에 연결된 해설은 그대로 두되 다른 문제에서 다시 연결할 수 있게 함
+  // 해설 삭제 시 그 해설을 가리키던 문제의 solution_temp_id를 null 로
+  CROPS = CROPS.filter(c => c.temp_id !== id);
+  CROPS.forEach(c => {
+    if (c.kind === "problem" && c.solution_temp_id === id) {
+      c.solution_temp_id = null;
+    }
+  });
+  document.querySelectorAll(".crop-rect").forEach(el => el.remove());
+  CROPS.forEach(renderCropRect);
+  renderLists();
+}
+
+// ---------- 사이드 리스트 ----------
+function renderLists() {
+  refreshAllLabels();
+
+  if (ENTITY === "concept") {
+    $("side-summary").textContent = `개념 (${conceptCount()})`;
+    $("btn-commit").disabled = conceptCount() === 0;
+  } else {
+    $("side-summary").innerHTML =
+      `문제 (<span>${problemCount()}</span>) · 해설 (<span>${solutionCount()}</span>)`;
+    $("btn-commit").disabled = problemCount() === 0;
+  }
+
+  const pl = $("problems-list");
+  const sl = $("solutions-list");
+  const cl = $("concepts-list");
+  pl.innerHTML = ""; sl.innerHTML = ""; cl.innerHTML = "";
+
+  if (problemCount() === 0) {
+    pl.innerHTML = `<div class="text-xs text-slate-400 text-center py-6 border border-dashed border-slate-200 rounded">문제 영역을 그리세요.</div>`;
+  }
+  if (solutionCount() === 0) {
+    sl.innerHTML = `<div class="text-xs text-slate-400 text-center py-4 border border-dashed border-slate-200 rounded">해설 영역(선택)을 그리려면 위에서 "해설 영역" 모드로 전환하세요.</div>`;
+  }
+
+  const problems = CROPS.filter(c => c.kind === "problem");
+  const solutions = CROPS.filter(c => c.kind === "solution");
+
+  problems.forEach((c, i) => {
+    const card = document.createElement("div");
+    card.className = "border border-slate-200 rounded-lg p-3 bg-white";
+    card.dataset.cropCard = c.temp_id;
+    const solOptions = `
+      <option value="">— 없음 —</option>
+      ${solutions.map((s, si) =>
+        `<option value="${s.temp_id}" ${s.temp_id===c.solution_temp_id?"selected":""}>해설 #${si+1} (${s.pdf==="solution"?"해설PDF":"문제PDF"} p.${s.page+1})</option>`
+      ).join("")}
+    `;
+    card.innerHTML = `
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs font-semibold text-brand-700">
+          문제 #${i+1} · ${c.pdf==="solution"?"해설PDF":"문제PDF"} p.${c.page+1}
+        </div>
+        <button type="button" data-act="del" class="text-xs text-red-600 hover:underline">삭제</button>
+      </div>
+      <input type="text" data-f="title" value="${esc(c.title)}" placeholder="제목 *"
+             class="w-full px-2 py-1.5 mb-2 border border-slate-300 rounded text-sm" />
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <select data-f="unit" class="px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
+          <option value="">단원 *</option>
+          ${UNIT_OPTIONS.map(u =>
+            `<option value="${esc(u.path)}" ${u.path===c.unit?"selected":""}>${esc(u.label)}</option>`
+          ).join("")}
+        </select>
+        <select data-f="difficulty" class="px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
+          <option value="">난이도 *</option>
+          ${DIFFICULTIES.map(d =>
+            `<option value="${d}" ${d===c.difficulty?"selected":""}>${d}</option>`
+          ).join("")}
+        </select>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <input type="text" data-f="source" value="${esc(c.source)}" placeholder="출처"
+               class="px-2 py-1.5 border border-slate-300 rounded text-sm" />
+        <input type="text" data-f="answer" value="${esc(c.answer)}" placeholder="정답"
+               class="px-2 py-1.5 border border-slate-300 rounded text-sm" />
+      </div>
+      <input type="text" data-f="tags" value="${esc(c.tags)}" placeholder="태그 (쉼표 구분)"
+             class="w-full px-2 py-1.5 mb-2 border border-slate-300 rounded text-sm" />
+      <div>
+        <label class="block text-[11px] text-slate-500 mb-1">연결된 해설</label>
+        <select data-f="solution_temp_id"
+                class="w-full px-2 py-1.5 border border-emerald-300 rounded text-sm bg-emerald-50">
+          ${solOptions}
+        </select>
+      </div>
+    `;
+    pl.appendChild(card);
+
+    card.addEventListener("mousedown", (e) => {
+      if (["INPUT","SELECT","BUTTON","OPTION"].includes(e.target.tagName)) return;
+      selectCrop(c.temp_id);
+    });
+    card.querySelector('[data-act="del"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteCrop(c.temp_id);
+    });
+    card.querySelectorAll("[data-f]").forEach(input => {
+      input.addEventListener("input", () => {
+        const f = input.dataset.f;
+        if (f === "solution_temp_id") {
+          c.solution_temp_id = input.value ? parseInt(input.value) : null;
+        } else {
+          c[f] = input.value;
+        }
+      });
+    });
+  });
+
+  solutions.forEach((c, i) => {
+    const card = document.createElement("div");
+    card.className = "border border-emerald-200 rounded-lg p-2 bg-emerald-50/30 flex items-center justify-between gap-2";
+    card.dataset.cropCard = c.temp_id;
+    const usedBy = CROPS.filter(x => x.kind === "problem" && x.solution_temp_id === c.temp_id).length;
+    card.innerHTML = `
+      <div class="text-xs">
+        <span class="font-semibold text-emerald-700">해설 #${i+1}</span>
+        <span class="text-slate-500">· ${c.pdf==="solution"?"해설PDF":"문제PDF"} p.${c.page+1}</span>
+        ${usedBy > 0
+          ? `<span class="ml-1 text-emerald-700">→ 문제 ${usedBy}개에 연결됨</span>`
+          : `<span class="ml-1 text-amber-600">⚠ 미연결</span>`}
+      </div>
+      <button type="button" data-act="del" class="text-xs text-red-600 hover:underline">삭제</button>
+    `;
+    sl.appendChild(card);
+    card.addEventListener("mousedown", (e) => {
+      if (e.target.tagName === "BUTTON") return;
+      selectCrop(c.temp_id);
+    });
+    card.querySelector('[data-act="del"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteCrop(c.temp_id);
+    });
+  });
+
+  // 개념 카드 (entity === 'concept' 일 때만 사용)
+  const concepts = CROPS.filter(c => c.kind === "concept");
+  if (ENTITY === "concept" && concepts.length === 0) {
+    cl.innerHTML = `<div class="text-xs text-slate-400 text-center py-6 border border-dashed border-slate-200 rounded">개념 영역을 그리세요.</div>`;
+  }
+  concepts.forEach((c, i) => {
+    const card = document.createElement("div");
+    card.className = "border border-cyan-200 rounded-lg p-3 bg-cyan-50/30";
+    card.dataset.cropCard = c.temp_id;
+    card.innerHTML = `
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs font-semibold text-cyan-700">개념 #${i+1} · p.${c.page+1}</div>
+        <button type="button" data-act="del" class="text-xs text-red-600 hover:underline">삭제</button>
+      </div>
+      <input type="text" data-f="title" value="${esc(c.title)}" placeholder="제목 *"
+             class="w-full px-2 py-1.5 mb-2 border border-slate-300 rounded text-sm" />
+      <select data-f="unit"
+              class="w-full px-2 py-1.5 mb-2 border border-slate-300 rounded text-sm bg-white">
+        <option value="">단원 *</option>
+        ${UNIT_OPTIONS.map(u =>
+          `<option value="${esc(u.path)}" ${u.path===c.unit?"selected":""}>${esc(u.label)}</option>`
+        ).join("")}
+      </select>
+      <div class="grid grid-cols-2 gap-2">
+        <input type="text" data-f="source" value="${esc(c.source)}" placeholder="출처"
+               class="px-2 py-1.5 border border-slate-300 rounded text-sm" />
+        <input type="text" data-f="tags" value="${esc(c.tags)}" placeholder="태그 (쉼표 구분)"
+               class="px-2 py-1.5 border border-slate-300 rounded text-sm" />
+      </div>
+    `;
+    cl.appendChild(card);
+    card.addEventListener("mousedown", (e) => {
+      if (["INPUT","SELECT","BUTTON","OPTION"].includes(e.target.tagName)) return;
+      selectCrop(c.temp_id);
+    });
+    card.querySelector('[data-act="del"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteCrop(c.temp_id);
+    });
+    card.querySelectorAll("[data-f]").forEach(input => {
+      input.addEventListener("input", () => { c[input.dataset.f] = input.value; });
+    });
+  });
+}
+
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// ---------- keyboard ----------
+document.addEventListener("keydown", (e) => {
+  if ((e.key === "Delete" || e.key === "Backspace")
+      && SELECTED
+      && !["INPUT","SELECT","TEXTAREA"].includes(e.target.tagName)) {
+    deleteCrop(SELECTED);
+    SELECTED = null;
+    e.preventDefault();
+  }
+});
+
+// ---------- 기본값 일괄 적용 ----------
+$("btn-apply-defaults").addEventListener("click", () => {
+  const u = $("default-unit").value;
+  const d = $("default-difficulty").value;
+  const s = $("default-source").value;
+  const t = $("default-tags").value;
+  if (!u && !d && !s && !t) {
+    alert("적용할 기본값이 비어있습니다.");
+    return;
+  }
+  // 적용 대상: 해설(solution) 제외 — 문제와 개념만
+  const targets = CROPS.filter(c => c.kind !== "solution");
+  if (targets.length === 0) {
+    alert("적용할 영역이 없습니다.");
+    return;
+  }
+  const fields = [];
+  targets.forEach(c => {
+    if (u) c.unit = u;
+    if (s) c.source = s;
+    if (t) c.tags = t;
+    if (d && c.kind === "problem") c.difficulty = d;
+  });
+  if (u) fields.push("단원");
+  if (d) fields.push("난이도");
+  if (s) fields.push("출처");
+  if (t) fields.push("태그");
+  renderLists();
+  // 가벼운 토스트 대신 버튼 텍스트 깜박이 피드백
+  const btn = $("btn-apply-defaults");
+  const prev = btn.textContent;
+  btn.textContent = `✓ ${targets.length}개 영역에 ${fields.join(", ")} 적용됨`;
+  btn.classList.add("bg-emerald-50", "border-emerald-300", "text-emerald-700");
+  setTimeout(() => {
+    btn.textContent = prev;
+    btn.classList.remove("bg-emerald-50", "border-emerald-300", "text-emerald-700");
+  }, 1800);
+});
+
+// ---------- commit ----------
+$("btn-commit").addEventListener("click", async () => {
+  if (ENTITY === "problem") {
+    const problems = CROPS.filter(c => c.kind === "problem");
+    for (let i = 0; i < problems.length; i++) {
+      const c = problems[i];
+      if (!c.title.trim()) { alert(`문제 #${i+1}: 제목을 입력하세요.`); return; }
+      if (!c.unit)         { alert(`문제 #${i+1}: 단원을 선택하세요.`); return; }
+      if (!c.difficulty)   { alert(`문제 #${i+1}: 난이도를 선택하세요.`); return; }
+    }
+  } else {
+    const concepts = CROPS.filter(c => c.kind === "concept");
+    for (let i = 0; i < concepts.length; i++) {
+      const c = concepts[i];
+      if (!c.title.trim()) { alert(`개념 #${i+1}: 제목을 입력하세요.`); return; }
+      if (!c.unit)         { alert(`개념 #${i+1}: 단원을 선택하세요.`); return; }
+    }
+  }
+  const btn = $("btn-commit");
+  btn.disabled = true;
+  btn.textContent = "등록 중...";
+  try {
+    const res = await fetch(COMMIT_URL, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ session_id: SESSION_ID, crops: CROPS, entity: ENTITY }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      alert(json.error || "등록 실패");
+      btn.disabled = false;
+      btn.textContent = "일괄 등록";
+      return;
+    }
+    window.location.href = json.redirect;
+  } catch (err) {
+    alert("등록 실패: " + err.message);
+    btn.disabled = false;
+    btn.textContent = "일괄 등록";
+  }
+});
+</script>
+{% endblock %}
