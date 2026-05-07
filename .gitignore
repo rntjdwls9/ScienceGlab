@@ -34,3 +34,6 @@ static/uploads/*
 # 로컬 환경 변수
 .env
 *.local
+
+*.db
+*.db.backup
