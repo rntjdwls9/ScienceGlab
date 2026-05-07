@@ -50,18 +50,26 @@
 
     <!-- 새 폴더 -->
     <form method="post" action="{{ url_for('exam_folders_create') }}"
-          class="flex gap-2 mb-6 bg-slate-50 border border-slate-200 rounded-lg p-3">
+          class="mb-6 bg-slate-50 border border-slate-200 rounded-lg p-3">
       {% if current_folder_id %}
         <input type="hidden" name="parent_id" value="{{ current_folder_id }}" />
       {% endif %}
-      <input type="text" name="name" required maxlength="60"
-             placeholder="새 폴더 이름{% if current_folder_id %} (현재 폴더 안){% endif %}"
-             class="flex-1 px-3 py-2 border border-slate-300 rounded-md text-sm
-                    focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
-      <button type="submit"
-              class="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md hover:bg-brand-700">
-        + 폴더 추가
-      </button>
+      <div class="flex gap-2">
+        <input type="text" name="name" required maxlength="60"
+               placeholder="새 폴더 이름{% if current_folder_id %} (현재 폴더 안){% endif %}"
+               class="flex-1 px-3 py-2 border border-slate-300 rounded-md text-sm
+                      focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" />
+        <button type="submit"
+                class="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md hover:bg-brand-700">
+          + 폴더 추가
+        </button>
+      </div>
+      {% if current_user.is_admin %}
+        <label class="inline-flex items-center gap-1.5 mt-2 text-xs text-slate-600 cursor-pointer">
+          <input type="checkbox" name="is_template" value="1" class="accent-brand-600 w-4 h-4" />
+          신규 가입자에게 자동 제공 (템플릿 폴더)
+        </label>
+      {% endif %}
     </form>
   {% endif %}
 
@@ -78,6 +86,9 @@
           <a href="{{ url_for('exams_list', folder_id=f.id) }}"
              class="block px-3 py-3 truncate font-medium text-slate-800">
             <span class="text-amber-500 mr-1">📁</span>{{ f.name }}
+            {% if f.is_template %}
+              <span class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-brand-100 text-brand-700 font-semibold align-middle">템플릿</span>
+            {% endif %}
           </a>
           <div class="flex border-t border-slate-100 text-xs">
             <button type="button"

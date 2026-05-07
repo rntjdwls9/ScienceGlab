@@ -28,6 +28,7 @@ DEFAULT_UNITS = [
     "물리학II", "화학II", "생명과학II", "지구과학II",
 ]
 DIFFICULTIES = ["1", "2", "3", "4", "5"]
+PROBLEM_TYPES = ["객관식", "주관식", "서술형"]
 ALLOWED_EXT = {"png", "jpg", "jpeg", "gif", "webp"}
 ALLOWED_ATTACH_EXT = ALLOWED_EXT | {
     "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx",
@@ -216,12 +217,14 @@ def init_db():
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS exam_folders (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            parent_id  INTEGER REFERENCES exam_folders(id),
-            name       TEXT NOT NULL,
-            position   INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            parent_id   INTEGER REFERENCES exam_folders(id),
+            name        TEXT NOT NULL,
+            position    INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL,
+            is_template INTEGER NOT NULL DEFAULT 0,
+            sort_order  INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -376,6 +379,13 @@ def init_db():
     con.execute("UPDATE problems SET difficulty='5' WHERE difficulty='상'")
     con.execute("UPDATE problems SET difficulty='3' WHERE difficulty='중'")
     con.execute("UPDATE problems SET difficulty='1' WHERE difficulty='하'")
+
+    # Add problem_type column (객관식/주관식/서술형) — nullable for existing rows
+    problems_cols = {r[1] for r in con.execute(
+        "PRAGMA table_info(problems)").fetchall()}
+    if "problem_type" not in problems_cols:
+        con.execute("ALTER TABLE problems ADD COLUMN problem_type TEXT")
+
     con.commit()
     con.close()
 
@@ -655,12 +665,13 @@ def upload():
         db.execute(
             """
             INSERT INTO problems
-                (title, unit, difficulty, source, tags, answer,
+                (title, unit, difficulty, problem_type, source, tags, answer,
                  problem_image, solution_image, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["title"], data["unit"], data["difficulty"],
+                data["problem_type"],
                 data["source"], data["tags"], data["answer"],
                 problem_name, solution_name,
                 datetime.utcnow().isoformat(timespec="seconds"),
@@ -673,6 +684,7 @@ def upload():
     return render_template("upload.html",
                            unit_options=get_unit_options(),
                            difficulties=DIFFICULTIES,
+                           problem_types=PROBLEM_TYPES,
                            problem=None)
 
 
@@ -690,6 +702,7 @@ def upload_batch():
         "upload_batch.html",
         unit_options=get_unit_options(),
         difficulties=DIFFICULTIES,
+        problem_types=PROBLEM_TYPES,
     )
 
 
@@ -839,6 +852,9 @@ def upload_batch_commit():
                     return jsonify({"error": f"문제 #{i+1}: 단원을 선택하세요."}), 400
                 if c.get("difficulty") not in DIFFICULTIES:
                     return jsonify({"error": f"문제 #{i+1}: 난이도를 선택하세요."}), 400
+                pt = (c.get("problem_type") or "").strip()
+                if pt not in PROBLEM_TYPES:
+                    return jsonify({"error": f"문제 #{i+1}: 유형을 선택하세요. (객관식/주관식/서술형)"}), 400
                 sid = c.get("solution_temp_id")
                 if sid is not None and sid not in solutions:
                     return jsonify({"error": f"문제 #{i+1}: 연결된 해설을 찾을 수 없습니다."}), 400
@@ -865,14 +881,16 @@ def upload_batch_commit():
                 db.execute(
                     """
                     INSERT INTO problems
-                        (title, unit, difficulty, source, tags, answer,
+                        (title, unit, difficulty, problem_type,
+                         source, tags, answer,
                          problem_image, solution_image, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(c["title"]).strip(),
                         c["unit"],
                         c["difficulty"],
+                        str(c.get("problem_type", "")).strip(),
                         str(c.get("source", "")).strip(),
                         str(c.get("tags", "")).strip(),
                         str(c.get("answer", "")).strip(),
@@ -966,12 +984,14 @@ def edit_problem(pid):
         db.execute(
             """
             UPDATE problems
-               SET title=?, unit=?, difficulty=?, source=?, tags=?, answer=?,
+               SET title=?, unit=?, difficulty=?, problem_type=?,
+                   source=?, tags=?, answer=?,
                    problem_image=?, solution_image=?
              WHERE id=?
             """,
             (
                 data["title"], data["unit"], data["difficulty"],
+                data["problem_type"],
                 data["source"], data["tags"], data["answer"],
                 problem_image, solution_image, pid,
             ),
@@ -983,6 +1003,7 @@ def edit_problem(pid):
     return render_template("upload.html",
                            unit_options=get_unit_options(),
                            difficulties=DIFFICULTIES,
+                           problem_types=PROBLEM_TYPES,
                            problem=problem)
 
 
@@ -1021,6 +1042,7 @@ def _parse_problem_form(units, *, edit: bool):
     title = request.form.get("title", "").strip()
     unit = request.form.get("unit", "").strip()
     difficulty = request.form.get("difficulty", "").strip()
+    problem_type = request.form.get("problem_type", "").strip()
     source = request.form.get("source", "").strip()
     tags = request.form.get("tags", "").strip()
     answer = request.form.get("answer", "").strip()
@@ -1033,6 +1055,9 @@ def _parse_problem_form(units, *, edit: bool):
         flash("단원을 선택하세요.", "error"); return False, {}, None, None
     if difficulty not in DIFFICULTIES:
         flash("난이도를 선택하세요. (1~5)", "error"); return False, {}, None, None
+    if problem_type not in PROBLEM_TYPES:
+        flash("유형을 선택하세요. (객관식/주관식/서술형)", "error")
+        return False, {}, None, None
 
     problem_name = save_upload(problem_file) if problem_file and problem_file.filename else None
     if not edit and not problem_name:
@@ -1048,6 +1073,7 @@ def _parse_problem_form(units, *, edit: bool):
 
     return True, {
         "title": title, "unit": unit, "difficulty": difficulty,
+        "problem_type": problem_type,
         "source": source, "tags": tags, "answer": answer,
     }, problem_name, solution_name
 
@@ -1293,6 +1319,7 @@ def _distinct_tags(db, table: str) -> list[str]:
 def search():
     units = [u.strip() for u in request.args.getlist("unit") if u.strip()]
     difficulty = request.args.get("difficulty", "").strip()
+    problem_type = request.args.get("problem_type", "").strip()
     source = request.args.get("source", "").strip()
     tag_raw = request.args.get("tag", "").strip()
     tags = [t.strip() for t in tag_raw.split(",") if t.strip()]
@@ -1314,6 +1341,12 @@ def search():
     if tab == "problem" and difficulty:
         conds.append("difficulty = ?")
         params.append(difficulty)
+    if tab == "problem" and problem_type:
+        if problem_type == "__none__":
+            conds.append("(problem_type IS NULL OR problem_type = '')")
+        elif problem_type in PROBLEM_TYPES:
+            conds.append("problem_type = ?")
+            params.append(problem_type)
     if source:
         conds.append("source LIKE ?")
         params.append(f"%{source}%")
@@ -1339,11 +1372,13 @@ def search():
         tab=tab,
         unit_options=get_unit_options(),
         difficulties=DIFFICULTIES,
+        problem_types=PROBLEM_TYPES,
         sources=sources,
         tag_options=tag_options,
         filters={
             "units": units,
             "difficulty": difficulty,
+            "problem_type": problem_type,
             "source": source,
             "tag": tag_raw,
             "tags": tags,
@@ -1481,6 +1516,62 @@ def _folder_breadcrumb(fid: int | None) -> list[dict]:
     return [{"id": None, "name": "보관함"}] + chain
 
 
+def _copy_template_folders(conn, target_user_id: int) -> int:
+    """admin의 is_template=1 폴더 트리를 target_user에게 복사. 빈 폴더만.
+
+    같은 conn에서 INSERT만 수행 — commit/rollback은 호출자 책임.
+    Returns: 복사된 폴더 개수 (admin 또는 템플릿 폴더가 없으면 0).
+    """
+    admin = conn.execute(
+        "SELECT id FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not admin:
+        return 0
+    admin_id = admin["id"]
+
+    rows = conn.execute(
+        "SELECT id, parent_id, name, position, sort_order "
+        "FROM exam_folders "
+        "WHERE user_id = ? AND is_template = 1",
+        (admin_id,),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    template_ids = {r["id"] for r in rows}
+    by_parent: dict = {}
+    for r in rows:
+        pid = r["parent_id"]
+        # 템플릿 트리 밖의 부모를 가리키면 새 트리에서 root로 승격
+        if pid is not None and pid not in template_ids:
+            pid = None
+        by_parent.setdefault(pid, []).append(r)
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    id_map: dict = {}
+    queue = list(by_parent.get(None, []))
+    count = 0
+    while queue:
+        r = queue.pop(0)
+        old_id = r["id"]
+        old_parent = r["parent_id"]
+        if old_parent is not None and old_parent not in template_ids:
+            old_parent = None
+        new_parent = id_map.get(old_parent) if old_parent is not None else None
+        cur = conn.execute(
+            "INSERT INTO exam_folders "
+            "(user_id, parent_id, name, position, created_at, "
+            " is_template, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?)",
+            (target_user_id, new_parent, r["name"], r["position"], now,
+             r["sort_order"]),
+        )
+        id_map[old_id] = cur.lastrowid
+        count += 1
+        queue.extend(by_parent.get(old_id, []))
+    return count
+
+
 @app.get("/exams")
 @login_required
 def exams_list():
@@ -1540,7 +1631,7 @@ def exams_list():
     else:
         if folder_id is None:
             subfolders = db.execute(
-                "SELECT id, name FROM exam_folders "
+                "SELECT id, name, is_template FROM exam_folders "
                 "WHERE user_id=? AND parent_id IS NULL "
                 "ORDER BY position, id",
                 (uid,),
@@ -1553,7 +1644,7 @@ def exams_list():
             ).fetchall()
         else:
             subfolders = db.execute(
-                "SELECT id, name FROM exam_folders "
+                "SELECT id, name, is_template FROM exam_folders "
                 "WHERE user_id=? AND parent_id=? "
                 "ORDER BY position, id",
                 (uid, folder_id),
@@ -1597,7 +1688,8 @@ def exams_list():
     return render_template(
         "exams.html",
         items=items,
-        subfolders=[{"id": r["id"], "name": r["name"]} for r in subfolders],
+        subfolders=[{"id": r["id"], "name": r["name"],
+                     "is_template": r["is_template"]} for r in subfolders],
         breadcrumb=breadcrumb,
         current_folder_id=folder_id,
         all_folders=all_folders,
@@ -1672,6 +1764,9 @@ def exam_folders_create():
             abort(400)
         _get_owned_folder(parent_id)
 
+    # is_template: admin만 지정 가능 (일반 사용자가 폼 조작해도 무시)
+    is_template = 1 if (is_admin() and request.form.get("is_template") == "1") else 0
+
     db = get_db()
     next_pos = db.execute(
         "SELECT COALESCE(MAX(position), -1) + 1 FROM exam_folders "
@@ -1679,13 +1774,17 @@ def exam_folders_create():
         (current_user_id(), parent_id),
     ).fetchone()[0]
     db.execute(
-        "INSERT INTO exam_folders (user_id, parent_id, name, position, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO exam_folders "
+        "(user_id, parent_id, name, position, created_at, is_template) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         (current_user_id(), parent_id, name, next_pos,
-         datetime.utcnow().isoformat(timespec="seconds")),
+         datetime.utcnow().isoformat(timespec="seconds"), is_template),
     )
     db.commit()
-    flash(f"폴더 '{name}' 을 만들었습니다.", "success")
+    msg = f"폴더 '{name}' 을 만들었습니다."
+    if is_template:
+        msg += " (신규 가입자에게 자동 제공)"
+    flash(msg, "success")
     return redirect(url_for("exams_list", folder_id=parent_id) if parent_id
                     else url_for("exams_list"))
 
@@ -2146,7 +2245,7 @@ def users_add():
         return redirect(url_for("users_list"))
     db = get_db()
     try:
-        db.execute(
+        cur = db.execute(
             "INSERT INTO users (username, password_hash, is_admin, created_at) "
             "VALUES (?, ?, ?, ?)",
             (
@@ -2156,10 +2255,19 @@ def users_add():
                 datetime.utcnow().isoformat(timespec="seconds"),
             ),
         )
+        new_uid = cur.lastrowid
+        folder_count = _copy_template_folders(db, new_uid)
         db.commit()
-        flash(f"사용자 '{username}'을(를) 추가했습니다.", "success")
+        msg = f"사용자 '{username}'을(를) 추가했습니다."
+        if folder_count:
+            msg += f" (템플릿 폴더 {folder_count}개 복사됨)"
+        flash(msg, "success")
     except sqlite3.IntegrityError:
+        db.rollback()
         flash(f"아이디 '{username}'은(는) 이미 존재합니다.", "error")
+    except Exception:
+        db.rollback()
+        raise
     return redirect(url_for("users_list"))
 
 

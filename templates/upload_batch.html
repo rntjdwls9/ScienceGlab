@@ -171,7 +171,7 @@
       <div class="text-xs font-semibold text-slate-700 mb-2">공통 기본값
         <span class="font-normal text-slate-500">(새 영역에 자동 적용 · 개별 변경 가능)</span>
       </div>
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
         <div>
           <label class="block text-xs text-slate-600 mb-1">단원</label>
           <select id="default-unit" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
@@ -184,6 +184,13 @@
           <select id="default-difficulty" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
             <option value="">선택</option>
             {% for d in difficulties %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+          </select>
+        </div>
+        <div id="default-problem-type-wrap">
+          <label class="block text-xs text-slate-600 mb-1">유형</label>
+          <select id="default-problem-type" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
+            <option value="">선택</option>
+            {% for pt in problem_types %}<option value="{{ pt }}">{{ pt }}</option>{% endfor %}
           </select>
         </div>
         <div>
@@ -248,6 +255,7 @@
 <script>
 const UNIT_OPTIONS = {{ unit_options|tojson }};
 const DIFFICULTIES = {{ difficulties|tojson }};
+const PROBLEM_TYPES = {{ problem_types|tojson }};
 const COMMIT_URL  = "{{ url_for('upload_batch_commit') }}";
 const PDF_URL     = "{{ url_for('upload_batch_pdf') }}";
 
@@ -332,6 +340,7 @@ $("btn-upload").addEventListener("click", async () => {
     $("mode-concept").classList.add("active");
     $("mode-color-hint").innerHTML = '색: <span class="text-cyan-700 font-semibold">시안</span>=개념';
     $("default-difficulty-wrap").classList.add("hidden");
+    $("default-problem-type-wrap").classList.add("hidden");
     $("problems-section").classList.add("hidden");
     $("solutions-section").classList.add("hidden");
     $("concepts-section").classList.remove("hidden");
@@ -492,6 +501,7 @@ function addCrop(pdf, page, x, y, w, h) {
     c.title = `${PDF_NAME || "PDF"} - p.${page+1} #${problemCount()+1}`;
     c.unit = $("default-unit").value;
     c.difficulty = $("default-difficulty").value;
+    c.problem_type = $("default-problem-type").value;
     c.source = $("default-source").value;
     c.tags = $("default-tags").value;
     c.answer = "";
@@ -641,6 +651,14 @@ function renderLists() {
           ).join("")}
         </select>
       </div>
+      <div class="mb-2">
+        <select data-f="problem_type" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
+          <option value="">유형 *</option>
+          ${PROBLEM_TYPES.map(pt =>
+            `<option value="${esc(pt)}" ${pt===c.problem_type?"selected":""}>${esc(pt)}</option>`
+          ).join("")}
+        </select>
+      </div>
       <div class="grid grid-cols-2 gap-2 mb-2">
         <input type="text" data-f="source" value="${esc(c.source)}" placeholder="출처"
                class="px-2 py-1.5 border border-slate-300 rounded text-sm" />
@@ -771,9 +789,10 @@ document.addEventListener("keydown", (e) => {
 $("btn-apply-defaults").addEventListener("click", () => {
   const u = $("default-unit").value;
   const d = $("default-difficulty").value;
+  const pt = $("default-problem-type").value;
   const s = $("default-source").value;
   const t = $("default-tags").value;
-  if (!u && !d && !s && !t) {
+  if (!u && !d && !pt && !s && !t) {
     alert("적용할 기본값이 비어있습니다.");
     return;
   }
@@ -789,9 +808,11 @@ $("btn-apply-defaults").addEventListener("click", () => {
     if (s) c.source = s;
     if (t) c.tags = t;
     if (d && c.kind === "problem") c.difficulty = d;
+    if (pt && c.kind === "problem") c.problem_type = pt;
   });
   if (u) fields.push("단원");
   if (d) fields.push("난이도");
+  if (pt) fields.push("유형");
   if (s) fields.push("출처");
   if (t) fields.push("태그");
   renderLists();
@@ -815,6 +836,7 @@ $("btn-commit").addEventListener("click", async () => {
       if (!c.title.trim()) { alert(`문제 #${i+1}: 제목을 입력하세요.`); return; }
       if (!c.unit)         { alert(`문제 #${i+1}: 단원을 선택하세요.`); return; }
       if (!c.difficulty)   { alert(`문제 #${i+1}: 난이도를 선택하세요.`); return; }
+      if (!c.problem_type) { alert(`문제 #${i+1}: 유형을 선택하세요. (객관식/주관식/서술형)`); return; }
     }
   } else {
     const concepts = CROPS.filter(c => c.kind === "concept");
