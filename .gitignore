@@ -37,3 +37,8 @@ static/uploads/*
 
 *.db
 *.db.backup
+# Helper patch scripts and backup files
+_patch*.py
+app.py.*
+_funcs*.txt
+_check.txt

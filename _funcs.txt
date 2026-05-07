@@ -1,0 +1,67 @@
+﻿=== save_upload, delete_upload, uploaded_file 함수 ===
+
+> app.py:55:def uploaded_file(filename):
+  app.py:56:    """Serve user-uploaded images from UPLOAD_DIR (env-configurable)."""
+  app.py:57:    return send_from_directory(UPLOAD_DIR, filename)
+  app.py:58:
+  app.py:59:
+  app.py:60:# ---------- DB ----------
+  app.py:61:def get_db():
+  app.py:62:    if "db" not in g:
+  app.py:63:        g.db = sqlite3.connect(DB_PATH)
+  app.py:64:        g.db.row_factory = sqlite3.Row
+  app.py:65:        g.db.execute("PRAGMA foreign_keys = ON")
+  app.py:66:    return g.db
+  app.py:67:
+  app.py:68:
+  app.py:69:@app.teardown_appcontext
+  app.py:70:def close_db(_exc):
+> app.py:550:def save_upload(file_storage) -> str | None:
+  app.py:551:    if not file_storage or not file_storage.filename:
+  app.py:552:        return None
+  app.py:553:    if not allowed_file(file_storage.filename):
+  app.py:554:        return None
+  app.py:555:    ext = file_storage.filename.rsplit(".", 1)[1].lower()
+  app.py:556:    name = f"{uuid.uuid4().hex}.{ext}"
+  app.py:557:    file_storage.save(UPLOAD_DIR / name)
+  app.py:558:    return name
+  app.py:559:
+  app.py:560:
+> app.py:561:def delete_upload(name: str | None) -> None:
+  app.py:562:    if not name:
+  app.py:563:        return
+  app.py:564:    try:
+  app.py:565:        (UPLOAD_DIR / name).unlink(missing_ok=True)
+  app.py:566:    except OSError:
+  app.py:567:        pass
+  app.py:568:
+  app.py:569:
+  app.py:570:def _attach_ext_ok(filename: str) -> bool:
+  app.py:571:    return ("." in filename
+  app.py:572:            and filename.rsplit(".", 1)[1].lower() in ALLOWED_ATTACH_EXT)
+  app.py:573:
+  app.py:574:
+  app.py:575:def save_attachments(db, post_id: int, files) -> int:
+  app.py:576:    """Save uploaded files as attachments for a post. Returns count saved."""
+
+
+
+=== UPLOAD_DIR 관련 라인 ===
+
+app.py:21:UPLOAD_DIR = Path(os.environ.get(
+app.py:22:    "UPLOAD_DIR", BASE_DIR / "static" / "uploads"))
+app.py:44:UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.py:48:BATCH_DIR = UPLOAD_DIR / "_batch"
+app.py:49:BATCH_DIR.mkdir(parents=True, exist_ok=True)
+app.py:56:    """Serve user-uploaded images from UPLOAD_DIR (env-configurable)."""
+app.py:57:    return send_from_directory(UPLOAD_DIR, filename)
+app.py:557:    file_storage.save(UPLOAD_DIR / name)
+app.py:565:        (UPLOAD_DIR / name).unlink(missing_ok=True)
+app.py:588:        dest = UPLOAD_DIR / stored
+app.py:752:    sess_dir = BATCH_DIR / session_id
+app.py:783:    """Render a normalized region from `doc[page_idx]` and save to UPLOAD_DIR.
+app.py:803:    pix.save(UPLOAD_DIR / name)
+app.py:820:    sess_dir = BATCH_DIR / session_id
+app.py:2219:        UPLOAD_DIR, row["stored_name"],
+
+

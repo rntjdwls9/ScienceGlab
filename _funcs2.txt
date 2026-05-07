@@ -1,0 +1,85 @@
+﻿=== save_attachments 함수 (L575~) ===
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    for f in files or []:
+        if not f or not f.filename:
+            continue
+        original = f.filename
+        if not _attach_ext_ok(original):
+            flash(f"?덉슜?섏? ?딅뒗 ?뚯씪 ?뺤떇: {original}", "error")
+            continue
+        ext = original.rsplit(".", 1)[1].lower()
+        stored = f"{uuid.uuid4().hex}.{ext}"
+        dest = UPLOAD_DIR / stored
+        f.save(dest)
+        try:
+            size = dest.stat().st_size
+        except OSError:
+            size = 0
+        db.execute(
+            "INSERT INTO post_attachments "
+            "(post_id, original_name, stored_name, size, mime, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (post_id, original, stored, size, f.mimetype or None, now),
+        )
+        saved += 1
+    return saved
+
+
+def get_post_attachments(db, post_id: int) -> list:
+    return db.execute(
+        "SELECT id, original_name, stored_name, size, mime "
+        "FROM post_attachments WHERE post_id=? ORDER BY id",
+
+=== PDF 처리 영역 (L780~810) ===
+    """Render a normalized region from `doc[page_idx]` and save to UPLOAD_DIR.
+    Returns saved filename."""
+    if page_idx < 0 or page_idx >= doc.page_count:
+        raise ValueError(f"?섎せ???섏씠吏 踰덊샇: {page_idx}")
+    page = doc[page_idx]
+    r = page.rect
+    x = max(0.0, min(1.0, float(x)))
+    y = max(0.0, min(1.0, float(y)))
+    w = max(0.001, min(1.0 - x, float(w)))
+    h = max(0.001, min(1.0 - y, float(h)))
+    clip = fitz.Rect(
+        r.x0 + x * r.width,
+        r.y0 + y * r.height,
+        r.x0 + (x + w) * r.width,
+        r.y0 + (y + h) * r.height,
+    )
+    zoom = PDF_CROP_DPI / 72.0
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom),
+                          clip=clip, alpha=False)
+    name = f"{uuid.uuid4().hex}.png"
+    pix.save(UPLOAD_DIR / name)
+    return name
+
+
+@app.post("/upload/batch/commit")
+@admin_required
+def upload_batch_commit():
+    data = request.get_json(silent=True) or {}
+    session_id = data.get("session_id", "")
+    crops = data.get("crops") or []
+    entity = data.get("entity", "problem")  # 'problem' | 'concept'
+
+    if not _is_session_id(session_id):
+        return jsonify({"error": "?섎せ???몄뀡?낅땲??"}), 400
+    if entity not in ("problem", "concept"):
+
+=== L2215~2225 영역 ===
+    return send_from_directory(
+        UPLOAD_DIR, row["stored_name"],
+        as_attachment=True, download_name=row["original_name"],
+    )
+
+
+# ----- user management (admin only) -----
+@app.get("/users")
+@admin_required
+def users_list():
+    rows = get_db().execute(
+        "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
+    ).fetchall()
+    return render_template("users.html", users=rows)
+
