@@ -716,7 +716,7 @@ def _render_pdf_pages(pdf_path: Path, sess_dir: Path,
         for i, page in enumerate(doc):
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             png_name = f"{kind}_page_{i}.png"
-            pix.save(sess_dir / png_name)
+            storage.save_bytes(pix.tobytes("png"), f"_batch/{session_id}/{png_name}")
             pages.append({
                 "index": i,
                 "kind": kind,  # 'main' | 'solution'
